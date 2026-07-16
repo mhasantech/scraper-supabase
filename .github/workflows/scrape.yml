@@ -1,0 +1,32 @@
+name: Scrape DSE Market Data
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'      # প্রতি ১০ মিনিটে রান হবে
+  workflow_dispatch:            # ম্যানুয়ালি রান করার জন্য
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run scraper
+        run: npm start
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SCRAPER_API: ${{ secrets.SCRAPER_API || 'https://dse-scraper.vercel.app/api' }}
+          BATCH_SIZE: ${{ secrets.BATCH_SIZE || 10 }}
