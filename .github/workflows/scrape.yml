@@ -27,7 +27,12 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/cse_scraper.js
 
-      - name: Run DSE Scraper
+      - name: Run DSE Index Scraper
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/dse_scraper.js
+
+      - name: Run DSE Company Data Scraper
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/dse_company_scraper.js
