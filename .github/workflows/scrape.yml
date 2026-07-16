@@ -1,53 +1,59 @@
-name: Market Scraper + Daily Closing
+name: Market Scraper (CSE + DSE + Daily Closing)
 
 on:
   schedule:
-    # প্রতি ১৫ মিনিটে স্ক্র্যাপ (আগের মতো)
-    - cron: '*/15 * * * 0-4'
-    # প্রতিদিন বিকাল ৩:৩০ টায় (বাংলাদেশ সময় UTC+6 → ৯:৩০ UTC)
-    - cron: '30 9 * * 0-4'
-  workflow_dispatch:
+    - cron: '*/15 * * * 0-4'   # রবি-বৃহস্পতি, প্রতি ১৫ মিনিট (অটো)
+  workflow_dispatch:           # ম্যানুয়াল রান
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # ... (আপনার আগের স্ক্র্যাপ জব)
+
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install dependencies
+
+      - name: Install Dependencies
         run: npm install
+
       - name: Run CSE Scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/cse_scraper.js
-      - name: Run DSE Scraper
+
+      - name: Run DSE Scraper (Auto)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/dse_scraper.js
 
-  daily-closing:
+  # ম্যানুয়াল রানের জন্য আলাদা জব (যদি প্রয়োজন হয়)
+  manual-scrape:
     runs-on: ubuntu-latest
-    needs: scrape   # স্ক্র্যাপ শেষ হওয়ার পর রান করবে (যদি একই সময়ে ট্রিগার হয়)
-    if: github.event.schedule == '30 9 * * 0-4' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install dependencies
+      - name: Install Dependencies
         run: npm install
-      - name: Update Daily Closing Prices
+      - name: Run CSE Scraper (Manual)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node scripts/update_daily_closing.js
+        run: node scripts/cse_scraper.js --manual
+      - name: Run DSE Scraper (Manual)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/dse_scraper.js --manual
