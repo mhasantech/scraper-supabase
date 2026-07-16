@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 const https = require('https');
 
 // ==========================================
-// 📌 সঠিক Supabase URL (হার্ডকোডেড)
+// 📌 Supabase কনফিগারেশন
 // ==========================================
 const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -14,23 +14,7 @@ if (!SUPABASE_SERVICE_KEY) {
     process.exit(1);
 }
 
-console.log(`✅ Supabase URL: ${SUPABASE_URL}`);
-
 const agent = new https.Agent({ rejectUnauthorized: false });
-
-// ==========================================
-// 🕐 বাংলাদেশ সময় চেক (ট্রেডিং আওয়ার)
-// ==========================================
-function isWithinTradingHours() {
-    const now = new Date();
-    const bdTime = new Date(now.getTime() + 6 * 60 * 60 * 1000);
-    const hours = bdTime.getUTCHours();
-    const minutes = bdTime.getUTCMinutes();
-    const start = 9 * 60 + 50;
-    const end = 14 * 60 + 30;
-    const current = hours * 60 + minutes;
-    return current >= start && current <= end;
-}
 
 // ==========================================
 // 📡 Supabase REST API-তে আপসার্ট
@@ -55,7 +39,7 @@ async function upsertToSupabase(table, record) {
         }
         return false;
     } catch (err) {
-        console.error(`❌ আপসার্ট ব্যর্থ (${record.code}):`, err.message);
+        console.error(`❌ আপসার্ট ব্যর্থ (${record.code || record.ticker}):`, err.message);
         return false;
     }
 }
@@ -68,11 +52,14 @@ async function scrapeSingleCompany(companyCode, todayDate) {
     try {
         const { data } = await axios.get(detailUrl, {
             httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
             timeout: 15000
         });
 
         const $ = cheerio.load(data);
+
         let info = {
             code: companyCode,
             date: todayDate,
@@ -87,6 +74,7 @@ async function scrapeSingleCompany(companyCode, todayDate) {
             updated_at: new Date().toISOString()
         };
 
+        // CSE ওয়েবসাইটের টেবিল পার্সিং
         $('table tr').each((i, el) => {
             const cols = $(el).find('td');
             cols.each((index, td) => {
@@ -112,35 +100,29 @@ async function scrapeSingleCompany(companyCode, todayDate) {
             });
         });
 
+        // P/E ক্যালকুলেশন
         const ltpNum = parseFloat(info.ltp);
         const epsNum = parseFloat(info.eps);
         if (!isNaN(ltpNum) && !isNaN(epsNum) && epsNum !== 0) {
             info.pe_ratio = (ltpNum / epsNum).toFixed(2);
         }
 
+        // Supabase-এ আপসার্ট (cse_market_data)
         const success = await upsertToSupabase('cse_market_data', info);
         if (success) {
             console.log(`✅ CSE: ${companyCode} -> LTP: ${info.ltp}`);
         }
 
     } catch (err) {
-        console.error(`❌ স্ক্র্যাপ ব্যর্থ (${companyCode}):`, err.message);
+        console.error(`❌ CSE স্ক্র্যাপ ব্যর্থ (${companyCode}):`, err.message);
     }
 }
 
 // ==========================================
-// 🚀 মেইন ফাংশন
+// 📡 CSE তালিকা থেকে কোম্পানি আনা
 // ==========================================
-async function startScraper() {
-    if (!isWithinTradingHours()) {
-        console.log(`⏳ ট্রেডিং আওয়ারের বাইরে। স্কিপ করছি।`);
-        process.exit(0);
-    }
-
-    console.log(`🕐 ${new Date().toISOString()} - CSE স্ক্র্যাপ শুরু...`);
-    const todayDate = new Date().toISOString().split('T')[0];
+async function getCSECompanyList() {
     const listUrl = "https://www.cse.com.bd/market/current_price";
-
     try {
         const { data } = await axios.get(listUrl, {
             httpsAgent: agent,
@@ -156,26 +138,70 @@ async function startScraper() {
             const cols = $(element).find('td');
             if (cols.length >= 2) {
                 const code = $(cols[1]).text().trim().replace(/[/\\.#$/[\]]/g, "-");
-                if (code && !companies.includes(code)) companies.push(code);
+                if (code && !companies.includes(code)) {
+                    companies.push(code);
+                }
             }
         });
 
-        console.log(`📊 মোট ${companies.length}টি কোম্পানি পাওয়া গেছে।`);
-
-        const chunkSize = 10;
-        for (let i = 0; i < companies.length; i += chunkSize) {
-            const chunk = companies.slice(i, i + chunkSize);
-            console.log(`📡 প্রসেসিং ${i+1}-${Math.min(i+chunkSize, companies.length)}/${companies.length}`);
-            await Promise.all(chunk.map(code => scrapeSingleCompany(code, todayDate)));
-            await new Promise(r => setTimeout(r, 500));
-        }
-
-        console.log('✅ CSE সম্পন্ন!');
-
-    } catch (error) {
-        console.error('❌ CSE তালিকা ব্যর্থ:', error.message);
-        process.exit(1);
+        return companies;
+    } catch (err) {
+        console.error("❌ CSE তালিকা আনা ব্যর্থ:", err.message);
+        return [];
     }
 }
 
-startScraper();
+// ==========================================
+// 📡 ব্যাকআপ লিস্ট (যদি ওয়েবসাইট থেকে না পাওয়া যায়)
+// ==========================================
+function getBackupList() {
+    return [
+        "1JANATAMF", "1STPRIMFMF", "AAMRANET", "AAMRATECH", "ABB1STMF",
+        "ABBANK", "ACFL", "ACI", "ACIFORMULA", "ACMELAB",
+        "ACTIVEFINE", "ADNTEL", "ADVENT", "AFCAGRO", "AFTABAUTO",
+        "AGNISYSL", "AGRANINS", "AIBL1STIMF", "AIL", "AL-HAJTEX",
+        "ALARABANK", "ALIF", "ALLTEX", "AMANFEED", "AMBEEPHA",
+        "ANLIMAYARN", "ANWARGALV", "APEXFOODS", "APEXFOOT", "APEXSPINN",
+        "APOLOISPAT", "ARAMIT", "ARAMITCEM", "ARGONDENIM", "ASIAPACINS",
+        "ATCSLGF", "ATLASBANG", "AZIZPIPES", "BANGAS", "BANKASIA",
+        "BATASHOE", "BATBC", "BAYLEASING", "BBS", "BCC",
+        "BDCOM", "BDFINANCE", "BDLAMPS", "BDTHAI", "BDTHAIFOOD",
+        "BDWELDING", "BEACHHATCH", "BEACONPHAR", "BENGALWTL", "BERGERPBL"
+    ]; // প্রথম ৫০টি, বাকি আপনার dseStocks অ্যারে থেকে নিতে পারেন
+}
+
+// ==========================================
+// 🚀 মেইন ফাংশন
+// ==========================================
+async function startScraper() {
+    console.log(`🕐 ${new Date().toISOString()} - CSE স্ক্র্যাপ শুরু...`);
+    const todayDate = new Date().toISOString().split('T')[0];
+
+    // ১. কোম্পানির তালিকা আনা
+    let companies = await getCSECompanyList();
+    if (companies.length === 0) {
+        console.log("⚠️ CSE তালিকা পাওয়া যায়নি, ব্যাকআপ লিস্ট ব্যবহার করছি...");
+        companies = getBackupList();
+    }
+
+    console.log(`📊 মোট ${companies.length}টি কোম্পানি পাওয়া গেছে।`);
+
+    // ২. ব্যাচে স্ক্র্যাপ (রেট লিমিট এড়াতে)
+    const chunkSize = 10;
+    for (let i = 0; i < companies.length; i += chunkSize) {
+        const chunk = companies.slice(i, i + chunkSize);
+        console.log(`📡 প্রসেসিং ${i+1}-${Math.min(i+chunkSize, companies.length)}/${companies.length}`);
+        await Promise.all(chunk.map(code => scrapeSingleCompany(code, todayDate)));
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log('✅ CSE স্ক্র্যাপিং সম্পন্ন!');
+}
+
+// ==========================================
+// 🔥 রান
+// ==========================================
+startScraper().catch(err => {
+    console.error('❌ Fatal error:', err);
+    process.exit(1);
+});
