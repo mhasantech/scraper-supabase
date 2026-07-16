@@ -14,15 +14,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Remove package-lock.json (if exists)
-        run: rm -f package-lock.json
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies (without lock file)
+      - name: Remove package-lock.json (if exists)
+        run: rm -f package-lock.json
+
+      - name: Install dependencies
         run: npm install --no-package-lock
 
       - name: Run scraper
