@@ -4,9 +4,9 @@ const cheerio = require('cheerio');
 const https = require('https');
 
 // ==========================================
-// 📌 কনফিগারেশন – সঠিক URL দিন
+// 📌 সঠিক Supabase URL (হার্ডকোডেড)
 // ==========================================
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://dpdicusxlrdydajkcgev.supabase.co';
+const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 if (!SUPABASE_SERVICE_KEY) {
@@ -14,12 +14,12 @@ if (!SUPABASE_SERVICE_KEY) {
     process.exit(1);
 }
 
-console.log(`🔗 Supabase URL: ${SUPABASE_URL}`);
+console.log(`✅ Supabase URL: ${SUPABASE_URL}`);
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// 🕐 বাংলাদেশ সময় চেক
+// 🕐 বাংলাদেশ সময় চেক (ট্রেডিং আওয়ার)
 // ==========================================
 function isWithinTradingHours() {
     const now = new Date();
@@ -33,7 +33,7 @@ function isWithinTradingHours() {
 }
 
 // ==========================================
-// 📡 Supabase-এ আপসার্ট (REST API)
+// 📡 Supabase REST API-তে আপসার্ট
 // ==========================================
 async function upsertToSupabase(table, record) {
     const url = `${SUPABASE_URL}/rest/v1/${table}`;
@@ -53,7 +53,6 @@ async function upsertToSupabase(table, record) {
         if (response.status === 201 || response.status === 200) {
             return true;
         }
-        console.warn(`⚠️ অপ্রত্যাশিত স্ট্যাটাস ${response.status} for ${record.code}`);
         return false;
     } catch (err) {
         console.error(`❌ আপসার্ট ব্যর্থ (${record.code}):`, err.message);
