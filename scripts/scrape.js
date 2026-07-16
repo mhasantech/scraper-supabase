@@ -3,6 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws');
 
 // ==========================================
 // 📌 কনফিগারেশন
@@ -15,7 +16,7 @@ const DRY_RUN = process.argv.includes('--dry-run');
 // 🔁 মাল্টিপল API এন্ডপয়েন্ট (একটা কাজ না করলে অন্যটা চেষ্টা করবে)
 const API_ENDPOINTS = [
     process.env.SCRAPER_API || 'https://dse-scraper.vercel.app/api',
-    'https://dse-scraper.vercel.app/api',  // ফ্যালব্যাক
+    'https://dse-scraper.vercel.app/api',
 ];
 
 // ==========================================
@@ -46,11 +47,15 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     process.exit(1);
 }
 
-// WebSocket সমর্থন নাই বলে সরাসরি REST API ব্যবহার করছি
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
-    realtime: { enabled: false }  // 👈 WebSocket বন্ধ করে দিচ্ছি
+    realtime: {
+        transport: WebSocket,
+        autoConnect: false
+    }
 });
+
+console.log('✅ Supabase client initialized');
 
 // ==========================================
 // 📡 স্ক্র্যাপার ফাংশন (Retry সহ)
@@ -59,7 +64,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 async function fetchWithRetry(url, options = {}, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
-            const response = await axios.get(url, { 
+            const response = await axios.get(url, {
                 timeout: 15000,
                 ...options,
                 headers: {
@@ -67,18 +72,18 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
                     ...options.headers
                 }
             });
-            
+
             // চেক করুন response JSON কিনা
             if (typeof response.data === 'string' && response.data.startsWith('<!DOCTYPE')) {
                 throw new Error('Received HTML instead of JSON - API may be down');
             }
-            
+
             return response;
         } catch (err) {
-            console.warn(`⚠️ Attempt ${i+1}/${retries} failed:`, err.message);
+            console.warn(`⚠️ Attempt ${i + 1}/${retries} failed:`, err.message);
             if (i === retries - 1) throw err;
             // ব্যাকঅফ: ১সে, ২সে, ৩সে
-            await new Promise(r => setTimeout(r, (i+1) * 1000));
+            await new Promise(r => setTimeout(r, (i + 1) * 1000));
         }
     }
 }
@@ -153,7 +158,7 @@ async function fetchDSEXIndex() {
             console.warn('⚠️ DSEX alternative failed:', err.message);
         }
     }
-    
+
     console.warn('⚠️ Could not fetch DSEX index from any source');
     return null;
 }
@@ -179,10 +184,39 @@ async function upsertMarketData(records) {
             return { success: 0, errors: records.length };
         }
 
+        console.log(`✅ Upserted ${records.length} records to market_prices`);
         return { success: records.length, errors: 0 };
     } catch (err) {
         console.error('❌ Upsert exception:', err.message);
         return { success: 0, errors: records.length };
+    }
+}
+
+async function upsertDSEX(record) {
+    if (DRY_RUN) {
+        console.log('🔍 DRY RUN: Would upsert DSEX:', record);
+        return { success: record ? 1 : 0, errors: 0 };
+    }
+
+    if (!record) return { success: 0, errors: 0 };
+
+    try {
+        const { error } = await supabase
+            .from('dsex_index')
+            .upsert(record, {
+                onConflict: 'date'
+            });
+
+        if (error) {
+            console.error('❌ DSEX upsert error:', error.message);
+            return { success: 0, errors: 1 };
+        }
+
+        console.log(`✅ Upserted DSEX: ${record.value} on ${record.date}`);
+        return { success: 1, errors: 0 };
+    } catch (err) {
+        console.error('❌ DSEX upsert exception:', err.message);
+        return { success: 0, errors: 1 };
     }
 }
 
@@ -201,7 +235,7 @@ async function runScraper() {
     // স্টক ডেটা ব্যাচে প্রসেস
     for (let i = 0; i < stockList.length; i += BATCH_SIZE) {
         const batch = stockList.slice(i, i + BATCH_SIZE);
-        console.log(`📡 Fetching batch ${Math.floor(i/BATCH_SIZE)+1}/${Math.ceil(stockList.length/BATCH_SIZE)} (${batch.length} stocks)`);
+        console.log(`📡 Fetching batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(stockList.length / BATCH_SIZE)} (${batch.length} stocks)`);
 
         const promises = batch.map(ticker => fetchStockData(ticker));
         const batchResults = await Promise.allSettled(promises);
@@ -221,6 +255,7 @@ async function runScraper() {
             totalErrors += upsertResult.errors;
         }
 
+        // রেট লিমিট এড়াতে ১.৫ সেকেন্ড বিরতি
         if (i + BATCH_SIZE < stockList.length) {
             await new Promise(resolve => setTimeout(resolve, 1500));
         }
@@ -237,35 +272,19 @@ async function runScraper() {
         console.log('ℹ️ No DSEX data fetched (skipping)');
     }
 
+    // 📊 সারাংশ
     console.log('✅ Scrape completed!');
     console.log(`📊 Success: ${totalSuccess}, Errors: ${totalErrors}`);
     console.log(`🕐 ${new Date().toISOString()}`);
 
-    if (totalErrors > 0) {
+    if (totalErrors > 0 && totalSuccess === 0) {
+        console.error('❌ All requests failed. Check API availability.');
         process.exit(1);
     }
-}
 
-async function upsertDSEX(record) {
-    if (DRY_RUN) {
-        console.log('🔍 DRY RUN: Would upsert DSEX:', record);
-        return { success: record ? 1 : 0, errors: 0 };
-    }
-    if (!record) return { success: 0, errors: 0 };
-
-    try {
-        const { error } = await supabase
-            .from('dsex_index')
-            .upsert(record, { onConflict: 'date' });
-
-        if (error) {
-            console.error('❌ DSEX upsert error:', error.message);
-            return { success: 0, errors: 1 };
-        }
-        return { success: 1, errors: 0 };
-    } catch (err) {
-        console.error('❌ DSEX upsert exception:', err.message);
-        return { success: 0, errors: 1 };
+    if (totalErrors > 0) {
+        console.warn('⚠️ Some errors occurred but partial data was saved.');
+        process.exit(0); // আংশিক সাফল্য
     }
 }
 
