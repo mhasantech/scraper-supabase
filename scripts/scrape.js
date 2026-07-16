@@ -3,6 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws');   // ✅ ws প্যাকেজ যোগ করুন
 
 // 📌 কনফিগারেশন
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -29,13 +30,20 @@ try {
     process.exit(1);
 }
 
-// 📌 Supabase ক্লায়েন্ট
+// 📌 Supabase ক্লায়েন্ট (✅ transport: ws যোগ করুন)
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     console.error('❌ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in environment');
     process.exit(1);
 }
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
+// 🟢 এখানে transport: ws যোগ করুন
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    realtime: {
+        transport: WebSocket
+    }
+});
+
+// বাকি কোড আগের মতোই থাকবে...
 // ==========================================
 // 📡 স্ক্র্যাপার ফাংশন
 // ==========================================
@@ -153,7 +161,6 @@ async function runScraper() {
 
     let totalSuccess = 0;
     let totalErrors = 0;
-    const results = [];
 
     // 📌 স্টক ডেটা ব্যাচে প্রসেস
     for (let i = 0; i < stockList.length; i += BATCH_SIZE) {
