@@ -17,7 +17,7 @@ if (!SUPABASE_SERVICE_KEY) {
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// 📡 Supabase REST API-তে আপসার্ট (409 হ্যান্ডেল সহ)
+// 📡 Supabase REST API-তে আপসার্ট
 // ==========================================
 async function upsertToSupabase(table, record) {
     const url = `${SUPABASE_URL}/rest/v1/${table}`;
@@ -40,162 +40,146 @@ async function upsertToSupabase(table, record) {
         return false;
     } catch (err) {
         if (err.response && err.response.status === 409) {
-            console.log(`ℹ️ ডুপ্লিকেট পাওয়া গেছে (${record.code || record.ticker}), ইগনোর করা হচ্ছে।`);
+            console.log(`ℹ️ ডুপ্লিকেট (${record.ticker}), ইগনোর।`);
             return true;
         }
-        console.error(`❌ আপসার্ট ব্যর্থ (${table}):`, err.message);
+        console.error(`❌ আপসার্ট ব্যর্থ:`, err.message);
         return false;
     }
 }
 
 // ==========================================
-// 📡 DSE-র টিকার লিস্ট আনা (বিকল্প পদ্ধতি)
+// 📡 DSE লেটেস্ট শেয়ার প্রাইস স্ক্র্যাপ
 // ==========================================
-async function getDSETickerList() {
-    // পদ্ধতি ১: মূল লিস্টিং পেজ (যা 404 দিচ্ছে)
-    try {
-        const listUrl = "https://dsebd.org/listed_companies.php";
-        const { data } = await axios.get(listUrl, {
-            httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-            timeout: 15000
-        });
-        const $ = cheerio.load(data);
-        const tickers = [];
-        $('table tr').each((i, el) => {
-            if (i === 0) return;
-            const cols = $(el).find('td');
-            if (cols.length >= 2) {
-                const ticker = $(cols[1]).text().trim();
-                if (ticker && !tickers.includes(ticker)) {
-                    tickers.push(ticker);
-                }
-            }
-        });
-        if (tickers.length > 0) return tickers;
-    } catch (e) {
-        console.warn('⚠️ লিস্টিং পেজ ব্যর্থ, ব্যাকআপ ব্যবহার করছি...');
-    }
+async function scrapeDSELatestPrices() {
+    const url = 'https://dsebd.org/latest_share_price_scroll_l.php';
+    console.log(`📡 স্ক্র্যাপিং: ${url}`);
 
-    // পদ্ধতি ২: DSE API থেকে ডায়নামিক লিস্ট (যদি থাকে)
-    try {
-        const apiUrl = "https://dsebd.org/api/listed_securities";
-        const { data } = await axios.get(apiUrl, { timeout: 10000 });
-        if (data && data.length > 0) {
-            return data.map(item => item.tradingCode || item.code).filter(Boolean);
-        }
-    } catch (e) {}
-
-    // পদ্ধতি ৩: ব্যাকআপ লিস্ট (সব DSE টিকার)
-    console.log('📋 ব্যাকআপ লিস্ট ব্যবহার করছি...');
-    return [
-        "ACI", "BATBC", "BEXIMCO", "GP", "ROBI", "SQURPHARMA",
-        "UNILEVERCL", "IFIC", "PUBALIBANK", "ISLAMIBANK", "BRACBANK",
-        "CITYBANK", "DUTCHBANGL", "EBL", "MTB", "NCCBANK",
-        "NRBBANK", "UCB", "UTTARABANK", "IDLC", "IPDC",
-        "BSRMSTEEL", "SSSTEEL", "MEGHNACEM", "HEIDELBCEM",
-        "BERGERPBL", "MARICO", "RENATA", "BEACONPHAR", "IBNSINA"
-    ];
-}
-
-// ==========================================
-// 📡 DSE লাইভ ডেটা স্ক্র্যাপ (সঠিক URL ও পার্সিং)
-// ==========================================
-async function scrapeDSELiveData(ticker, todayDate) {
-    // DSE-র কোম্পানি ডিটেইল পেজ (সঠিক URL)
-    const url = `https://dsebd.org/displayCompany.php?name=${ticker}`;
     try {
         const { data } = await axios.get(url, {
             httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-            timeout: 15000
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            },
+            timeout: 20000
         });
 
         const $ = cheerio.load(data);
-        let info = {
-            ticker: ticker,
-            date: todayDate,
-            ltp: 0,
-            high: 0,
-            low: 0,
-            volume: 0,
-            change: 0,
-            change_percent: 0,
-            updated_at: new Date().toISOString()
-        };
+        const todayDate = new Date().toISOString().split('T')[0];
+        let records = [];
+        let successCount = 0;
 
-        // DSE পেজের HTML থেকে ডেটা বের করা (নির্দিষ্ট ক্লাস অনুযায়ী)
-        // উদাহরণ: "Last Trade Price", "High", "Low" ইত্যাদি
-        $('table tr').each((i, el) => {
-            const cols = $(el).find('td');
-            if (cols.length >= 2) {
-                const label = $(cols[0]).text().trim().toLowerCase();
-                const value = $(cols[1]).text().trim().replace(/,/g, '');
-                if (label.includes('last trade price') || label.includes('ltp')) {
-                    info.ltp = parseFloat(value) || 0;
-                } else if (label.includes('high')) {
-                    info.high = parseFloat(value) || 0;
-                } else if (label.includes('low')) {
-                    info.low = parseFloat(value) || 0;
-                } else if (label.includes('volume')) {
-                    info.volume = parseInt(value) || 0;
-                } else if (label.includes('change')) {
-                    const clean = value.replace(/[()%]/g, '').trim();
-                    const parts = clean.split(' ');
-                    info.change = parseFloat(parts[0]) || 0;
-                    if (parts.length > 1) {
-                        info.change_percent = parseFloat(parts[1]) || 0;
-                    }
+        // 🔍 টেবিলের সারি খোঁজা (screenshot অনুযায়ী)
+        // টেবিলের হেডার: TRADING CODE, LTP, HIGH, LOW, CLOSEP, YCP
+        $('table tr').each((index, element) => {
+            // হেডার বাদ দিন (প্রথম সারি)
+            if (index === 0) return;
+
+            const cols = $(element).find('td');
+            if (cols.length >= 6) {
+                const ticker = $(cols[1]).text().trim(); // TRADING CODE
+                const ltp = parseFloat($(cols[2]).text().trim()) || 0;
+                const high = parseFloat($(cols[3]).text().trim()) || 0;
+                const low = parseFloat($(cols[4]).text().trim()) || 0;
+                const close = parseFloat($(cols[5]).text().trim()) || 0;
+                const ycp = parseFloat($(cols[6]).text().trim()) || 0;
+
+                if (ticker && ltp > 0) {
+                    const record = {
+                        ticker: ticker,
+                        date: todayDate,
+                        ltp: ltp,
+                        high: high,
+                        low: low,
+                        close: close,
+                        ycp: ycp,
+                        updated_at: new Date().toISOString()
+                    };
+                    records.push(record);
                 }
             }
         });
 
-        // যদি LTP না পাওয়া যায়, তাহলে HTML-এর অন্য অংশে খোঁজা
-        if (info.ltp === 0) {
-            $('span').each((i, el) => {
-                const text = $(el).text().trim();
-                if (text.includes('LTP') || text.includes('Last Trade')) {
-                    const parent = $(el).parent();
-                    const val = parent.find('span:last-child').text().trim().replace(/,/g, '');
-                    info.ltp = parseFloat(val) || 0;
+        // 📊 যদি কোনো ডেটা না পাওয়া যায়, তাহলে অন্য সিলেক্টর চেষ্টা
+        if (records.length === 0) {
+            console.log('🔄 প্রথম সিলেক্টরে ডেটা পাওয়া যায়নি, ব্যাকআপ সিলেক্টর চেষ্টা...');
+            $('tr').each((index, element) => {
+                if (index === 0) return;
+                const cols = $(element).find('td');
+                if (cols.length >= 6) {
+                    const ticker = $(cols[0]).text().trim();
+                    const ltp = parseFloat($(cols[1]).text().trim()) || 0;
+                    if (ticker && ltp > 0) {
+                        records.push({
+                            ticker: ticker,
+                            date: todayDate,
+                            ltp: ltp,
+                            high: parseFloat($(cols[2]).text().trim()) || 0,
+                            low: parseFloat($(cols[3]).text().trim()) || 0,
+                            close: parseFloat($(cols[4]).text().trim()) || 0,
+                            ycp: parseFloat($(cols[5]).text().trim()) || 0,
+                            updated_at: new Date().toISOString()
+                        });
+                    }
                 }
             });
         }
 
-        // আপসার্ট (dse_live_data)
-        const success = await upsertToSupabase('dse_live_data', info);
-        if (success && info.ltp > 0) {
-            console.log(`✅ DSE Live: ${ticker} -> LTP: ${info.ltp}`);
-        } else if (success) {
-            console.log(`ℹ️ DSE Live: ${ticker} -> LTP পাওয়া যায়নি (০)`);
-        }
+        console.log(`📊 মোট ${records.length}টি রেকর্ড পাওয়া গেছে।`);
 
-        // 🆕 আজকের ক্লোজিং ডেটা সেভ করার জন্য (শুধু যদি LTP > 0)
-        if (info.ltp > 0) {
+        // 💾 Supabase-এ সেভ (dse_live_data ও dse_closing_prices)
+        for (const record of records) {
+            // ১. লাইভ ডেটা
+            const liveRecord = {
+                ticker: record.ticker,
+                date: record.date,
+                ltp: record.ltp,
+                high: record.high,
+                low: record.low,
+                volume: 0,
+                change: record.ltp - record.ycp,
+                change_percent: record.ycp > 0 ? ((record.ltp - record.ycp) / record.ycp) * 100 : 0,
+                updated_at: record.updated_at
+            };
+            const liveSaved = await upsertToSupabase('dse_live_data', liveRecord);
+            if (liveSaved) {
+                console.log(`✅ DSE Live: ${record.ticker} -> LTP: ${record.ltp}`);
+                successCount++;
+            }
+
+            // ২. ক্লোজিং ডেটা (শুধু LTP, High, Low)
             const closingRecord = {
-                ticker: ticker,
-                date: todayDate,
-                ltp: info.ltp,
-                high: info.high,
-                low: info.low,
-                volume: info.volume,
-                updated_at: new Date().toISOString()
+                ticker: record.ticker,
+                date: record.date,
+                ltp: record.ltp,
+                high: record.high,
+                low: record.low,
+                volume: 0,
+                updated_at: record.updated_at
             };
             await upsertToSupabase('dse_closing_prices', closingRecord);
         }
 
+        console.log(`✅ DSE স্ক্র্যাপ সম্পন্ন! সফল: ${successCount}/${records.length}`);
+        return records;
+
     } catch (err) {
-        console.error(`❌ DSE লাইভ স্ক্র্যাপ ব্যর্থ (${ticker}):`, err.message);
+        console.error('❌ DSE স্ক্র্যাপ ব্যর্থ:', err.message);
+        if (err.response) {
+            console.error('📄 রেসপন্স স্ট্যাটাস:', err.response.status);
+        }
+        return [];
     }
 }
 
 // ==========================================
-// 📡 DSEX ইনডেক্স স্ক্র্যাপ (আগের মতো)
+// 📡 DSEX ইনডেক্স (আগের মতো)
 // ==========================================
 async function scrapeDSEIndices(todayDate) {
     console.log("📊 DSEX ইনডেক্স সংগ্রহ...");
-    const homeUrl = "https://dsebd.org/index.php";
     try {
+        const homeUrl = "https://dsebd.org/index.php";
         const { data } = await axios.get(homeUrl, {
             httpsAgent: agent,
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
@@ -228,32 +212,6 @@ async function scrapeDSEIndices(todayDate) {
 }
 
 // ==========================================
-// 📡 DSE API থেকে ডিভিডেন্ড (409 ফিক্স সহ)
-// ==========================================
-async function fetchFromDSEApi(companyCode, todayDate) {
-    const apiUrl = `https://dse-scrape.vercel.app/api/scrape?action=all&tradingCode=${companyCode}`;
-    try {
-        const response = await axios.get(apiUrl, { timeout: 15000 });
-        if (response.data?.success && response.data?.data?.details) {
-            const details = response.data.data.details;
-            const record = {
-                code: companyCode,
-                date: todayDate,
-                listing_year: details.listingYear || "N/A",
-                share_category: details.shareCategory || "N/A",
-                cash_dividend: details.cashDividend || "N/A",
-                stock_dividend: details.stockDividend || "N/A",
-                updated_at: new Date().toISOString()
-            };
-            const success = await upsertToSupabase('dse_dividend_data', record);
-            if (success) console.log(`✅ DSE DIV: ${companyCode} সেভ হয়েছে`);
-        }
-    } catch (err) {
-        console.error(`❌ DSE API ব্যর্থ (${companyCode}):`, err.message);
-    }
-}
-
-// ==========================================
 // 🚀 মেইন ফাংশন
 // ==========================================
 async function startScraper() {
@@ -263,31 +221,10 @@ async function startScraper() {
 
     // ১. DSEX ইনডেক্স
     await scrapeDSEIndices(todayDate);
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1000));
 
-    // ২. টিকার লিস্ট
-    const tickers = await getDSETickerList();
-    console.log(`📊 মোট ${tickers.length}টি টিকার পাওয়া গেছে।`);
-
-    // ৩. লাইভ ডেটা স্ক্র্যাপ (ব্যাচে)
-    const chunkSize = isManual ? 3 : 10;
-    for (let i = 0; i < tickers.length; i += chunkSize) {
-        const chunk = tickers.slice(i, i + chunkSize);
-        console.log(`📡 DSE লাইভ প্রসেসিং ${i+1}-${Math.min(i+chunkSize, tickers.length)}/${tickers.length}`);
-        await Promise.all(chunk.map(ticker => scrapeDSELiveData(ticker, todayDate)));
-        await new Promise(r => setTimeout(r, isManual ? 2000 : 500));
-    }
-
-    // ৪. ডিভিডেন্ড ডেটা (শুধু প্রথম ২০টি, সময় বাঁচাতে)
-    const divCompanies = tickers.slice(0, 20);
-    console.log(`📡 DSE ডিভিডেন্ড তথ্য সংগ্রহ (${divCompanies.length}টি)...`);
-    const divChunk = isManual ? 2 : 5;
-    for (let i = 0; i < divCompanies.length; i += divChunk) {
-        const chunk = divCompanies.slice(i, i + divChunk);
-        console.log(`⏳ [${i+1}-${Math.min(i+divChunk, divCompanies.length)}/${divCompanies.length}]`);
-        await Promise.all(chunk.map(code => fetchFromDSEApi(code, todayDate)));
-        await new Promise(r => setTimeout(r, isManual ? 2000 : 1000));
-    }
+    // ২. লেটেস্ট শেয়ার প্রাইস
+    await scrapeDSELatestPrices();
 
     console.log('✅ DSE স্ক্র্যাপিং সম্পন্ন!');
 }
