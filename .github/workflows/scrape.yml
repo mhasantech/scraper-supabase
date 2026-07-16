@@ -2,16 +2,13 @@ name: Market Scraper (CSE + DSE)
 
 on:
   schedule:
-    # প্রতি ১৫ মিনিটে, রবি-বৃহস্পতি (০=রবি, ৪=বৃহস্পতি)
     - cron: '*/15 * * * 0-4'
-  workflow_dispatch: # ম্যানুয়াল রান
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout Code
@@ -27,12 +24,10 @@ jobs:
 
       - name: Run CSE Scraper
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/cse_scraper.js
 
       - name: Run DSE Scraper
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/dse_scraper.js
