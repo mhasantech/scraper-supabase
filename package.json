@@ -1,16 +1,13 @@
 {
   "name": "market-scraper-supabase",
   "version": "1.0.0",
-  "description": "CSE & DSE Scraper with Supabase",
+  "description": "CSE & DSE Scraper with Supabase REST API",
   "main": "scripts/cse_scraper.js",
   "scripts": {
     "start": "node scripts/cse_scraper.js && node scripts/dse_scraper.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.0",
     "axios": "^1.6.0",
-    "cheerio": "^1.0.0-rc.12",
-    "ws": "^8.18.0",
-    "node-fetch": "^2.7.0"
+    "cheerio": "^1.0.0-rc.12"
   }
 }
