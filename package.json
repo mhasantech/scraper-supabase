@@ -1,0 +1,17 @@
+{
+  "name": "dse-scraper-supabase",
+  "version": "1.0.0",
+  "description": "Scrape DSE/CSE market data and upload to Supabase every 10 minutes",
+  "main": "scripts/scrape.js",
+  "scripts": {
+    "start": "node scripts/scrape.js",
+    "test": "node scripts/scrape.js --dry-run"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "axios": "^1.7.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
