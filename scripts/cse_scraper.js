@@ -2,6 +2,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');  // 👈 গুরুত্বপূর্ণ
 const https = require('https');
 
 // ==========================================
@@ -15,9 +16,13 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     process.exit(1);
 }
 
+// ✅ WebSocket ফিক্স সহ Supabase ক্লায়েন্ট
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
-    realtime: { autoConnect: false }
+    realtime: {
+        transport: WebSocket,
+        autoConnect: false
+    }
 });
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -28,12 +33,10 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // ==========================================
 function isWithinTradingHours() {
     const now = new Date();
-    // বাংলাদেশ সময় UTC+6
     const bdTime = new Date(now.getTime() + 6 * 60 * 60 * 1000);
     const hours = bdTime.getUTCHours();
     const minutes = bdTime.getUTCMinutes();
 
-    // ৯:৫০ AM – ২:৩০ PM
     const start = 9 * 60 + 50;
     const end = 14 * 60 + 30;
     const current = hours * 60 + minutes;
@@ -95,14 +98,12 @@ async function scrapeSingleCompany(companyCode, todayDate) {
             });
         });
 
-        // P/E ক্যালকুলেশন
         const ltpNum = parseFloat(companyInfo.ltp);
         const epsNum = parseFloat(companyInfo.eps);
         if (!isNaN(ltpNum) && !isNaN(epsNum) && epsNum !== 0) {
             companyInfo.pe_ratio = (ltpNum / epsNum).toFixed(2);
         }
 
-        // Supabase-এ আপসার্ট
         const { error } = await supabase
             .from('cse_market_data')
             .upsert({
@@ -134,9 +135,8 @@ async function scrapeSingleCompany(companyCode, todayDate) {
 // 🚀 মেইন ফাংশন
 // ==========================================
 async function startScraper() {
-    // ⏰ সময় চেক
     if (!isWithinTradingHours()) {
-        console.log(`⏳ বর্তমান সময় ট্রেডিং আওয়ারের বাইরে। (শুধু ৯:৫০ AM – ২:৩০ PM) স্কিপ করছি।`);
+        console.log(`⏳ বর্তমান সময় ট্রেডিং আওয়ারের বাইরে। স্কিপ করছি।`);
         process.exit(0);
     }
 
