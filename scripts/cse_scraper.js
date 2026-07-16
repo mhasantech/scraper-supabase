@@ -4,15 +4,17 @@ const cheerio = require('cheerio');
 const https = require('https');
 
 // ==========================================
-// 📌 কনফিগারেশন
+// 📌 কনফিগারেশন – সঠিক URL দিন
 // ==========================================
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    console.error('❌ SUPABASE_URL বা SUPABASE_SERVICE_KEY পাওয়া যায়নি।');
+if (!SUPABASE_SERVICE_KEY) {
+    console.error('❌ SUPABASE_SERVICE_KEY পাওয়া যায়নি।');
     process.exit(1);
 }
+
+console.log(`🔗 Supabase URL: ${SUPABASE_URL}`);
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 
@@ -33,7 +35,7 @@ function isWithinTradingHours() {
 // ==========================================
 // 📡 Supabase-এ আপসার্ট (REST API)
 // ==========================================
-async function upsertToSupabase(table, record, conflictKey) {
+async function upsertToSupabase(table, record) {
     const url = `${SUPABASE_URL}/rest/v1/${table}`;
     const headers = {
         'apikey': SUPABASE_SERVICE_KEY,
@@ -46,16 +48,15 @@ async function upsertToSupabase(table, record, conflictKey) {
         const response = await axios.post(url, record, {
             headers,
             httpsAgent: agent,
-            timeout: 10000
+            timeout: 15000
         });
-        // 201 Created বা 200 OK সফল
         if (response.status === 201 || response.status === 200) {
             return true;
         }
-        console.warn(`⚠️ অপ্রত্যাশিত স্ট্যাটাস: ${response.status}`);
+        console.warn(`⚠️ অপ্রত্যাশিত স্ট্যাটাস ${response.status} for ${record.code}`);
         return false;
     } catch (err) {
-        console.error(`❌ আপসার্ট ব্যর্থ (${record.code || record.ticker}):`, err.message);
+        console.error(`❌ আপসার্ট ব্যর্থ (${record.code}):`, err.message);
         return false;
     }
 }
@@ -68,7 +69,8 @@ async function scrapeSingleCompany(companyCode, todayDate) {
     try {
         const { data } = await axios.get(detailUrl, {
             httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            timeout: 15000
         });
 
         const $ = cheerio.load(data);
@@ -117,8 +119,7 @@ async function scrapeSingleCompany(companyCode, todayDate) {
             info.pe_ratio = (ltpNum / epsNum).toFixed(2);
         }
 
-        // 🟢 Supabase REST API-তে আপসার্ট
-        const success = await upsertToSupabase('cse_market_data', info, 'code, date');
+        const success = await upsertToSupabase('cse_market_data', info);
         if (success) {
             console.log(`✅ CSE: ${companyCode} -> LTP: ${info.ltp}`);
         }
@@ -144,7 +145,8 @@ async function startScraper() {
     try {
         const { data } = await axios.get(listUrl, {
             httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 15000
         });
 
         const $ = cheerio.load(data);
