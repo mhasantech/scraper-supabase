@@ -1,90 +1,148 @@
 // scripts/update_daily_closing.js
-const { createClient } = require('@supabase/supabase-js');
+const axios = require('axios');
 const https = require('https');
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+// ==========================================
+// 📌 Supabase কনফিগারেশন
+// ==========================================
+const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    console.error('❌ Missing Supabase credentials');
+if (!SUPABASE_SERVICE_KEY) {
+    console.error('❌ SUPABASE_SERVICE_KEY পাওয়া যায়নি।');
     process.exit(1);
 }
 
 const agent = new https.Agent({ rejectUnauthorized: false });
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false },
-    realtime: { autoConnect: false },
-    fetch: (url, options) => fetch(url, { ...options, agent })
-});
 
-const today = new Date().toISOString().split('T')[0];
+// ==========================================
+// 📡 Supabase REST API-তে আপসার্ট
+// ==========================================
+async function upsertToSupabase(table, record) {
+    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+    };
 
-async function updateDailyClosing() {
-    console.log(`📅 Updating daily closing prices for ${today}...`);
-
-    // ১. আজকের সর্বশেষ ডেটা Supabase থেকে নিন (প্রতিটি টিকারের জন্য)
-    const { data: latestData, error } = await supabase
-        .from('cse_market_data')
-        .select('code, ltp, high, low, volume, category, eps, pe_ratio, dividend, record_date')
-        .order('date', { ascending: false });
-
-    if (error) {
-        console.error('❌ Error fetching latest data:', error);
-        process.exit(1);
-    }
-
-    // ২. প্রতিটি টিকারের জন্য শুধু সর্বশেষ এন্ট্রি নিন (একাধিক থাকলে)
-    const seen = new Set();
-    const closingData = [];
-    for (const row of latestData) {
-        if (!seen.has(row.code)) {
-            seen.add(row.code);
-            closingData.push({
-                ticker: row.code,
-                date: today,
-                ltp: row.ltp || 0,
-                high: row.high || 0,
-                low: row.low || 0,
-                volume: row.volume || 0,
-                category: row.category || null,
-                eps: row.eps || null,
-                pe_ratio: row.pe_ratio || null,
-                dividend: row.dividend || null,
-                record_date: row.record_date || null,
-                updated_at: new Date().toISOString()
-            });
+    try {
+        const response = await axios.post(url, record, {
+            headers,
+            httpsAgent: agent,
+            timeout: 15000
+        });
+        if (response.status === 201 || response.status === 200) {
+            return true;
         }
-    }
-
-    if (closingData.length === 0) {
-        console.log('ℹ️ No data found for today.');
-        return;
-    }
-
-    console.log(`📊 ${closingData.length} stocks will be saved as closing prices.`);
-
-    // ৩. daily_closing_prices টেবিলে আপসার্ট করুন (ব্যাচে)
-    const batchSize = 50;
-    let success = 0, errors = 0;
-
-    for (let i = 0; i < closingData.length; i += batchSize) {
-        const batch = closingData.slice(i, i + batchSize);
-        const { error: upsertError } = await supabase
-            .from('daily_closing_prices')
-            .upsert(batch, { onConflict: 'ticker, date' });
-
-        if (upsertError) {
-            console.error('❌ Upsert error:', upsertError);
-            errors += batch.length;
-        } else {
-            success += batch.length;
+        return false;
+    } catch (err) {
+        if (err.response && err.response.status === 409) {
+            console.log(`ℹ️ ডুপ্লিকেট (${record.ticker}), ইগনোর।`);
+            return true;
         }
+        console.error(`❌ আপসার্ট ব্যর্থ:`, err.message);
+        return false;
     }
-
-    console.log(`✅ Daily closing update complete. Success: ${success}, Errors: ${errors}`);
 }
 
-updateDailyClosing().catch(err => {
-    console.error('❌ Fatal error:', err);
-    process.exit(1);
-});
+// ==========================================
+// 📡 CSE-র দৈনিক ক্লোজিং ডেটা আপডেট
+// ==========================================
+async function updateDailyClosing() {
+    const today = new Date().toISOString().split('T')[0];
+    console.log(`📅 CSE দৈনিক ক্লোজিং আপডেট: ${today}`);
+
+    try {
+        // ১. আজকের সর্বশেষ ডেটা Supabase থেকে নিন (প্রতিটি টিকারের)
+        const url = `${SUPABASE_URL}/rest/v1/cse_market_data?select=code,ltp,high,low,eps,pe_ratio,dividend,record_date,category&order=date.desc`;
+        const headers = {
+            'apikey': SUPABASE_SERVICE_KEY,
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`
+        };
+
+        const response = await axios.get(url, {
+            headers,
+            httpsAgent: agent,
+            timeout: 15000
+        });
+
+        const data = response.data;
+        if (!data || data.length === 0) {
+            console.log('ℹ️ আজকের কোনো ডেটা পাওয়া যায়নি।');
+            return;
+        }
+
+        // ২. প্রতিটি টিকারের জন্য শুধু সর্বশেষ এন্ট্রি নিন (একাধিক থাকলে)
+        const seen = new Set();
+        const closingData = [];
+        for (const row of data) {
+            if (!seen.has(row.code)) {
+                seen.add(row.code);
+                closingData.push({
+                    ticker: row.code,
+                    date: today,
+                    ltp: row.ltp || 0,
+                    high: row.high || 0,
+                    low: row.low || 0,
+                    category: row.category || null,
+                    eps: row.eps || null,
+                    pe_ratio: row.pe_ratio || null,
+                    dividend: row.dividend || null,
+                    record_date: row.record_date || null,
+                    updated_at: new Date().toISOString()
+                });
+            }
+        }
+
+        console.log(`📊 ${closingData.length}টি টিকার ক্লোজিং ডেটা সেভ হবে।`);
+
+        // ৩. daily_closing_prices টেবিলে আপসার্ট (ব্যাচে)
+        const batchSize = 50;
+        let success = 0, errors = 0;
+
+        for (let i = 0; i < closingData.length; i += batchSize) {
+            const batch = closingData.slice(i, i + batchSize);
+            // ব্যাচ আপসার্ট (একাধিক রেকর্ড একসাথে)
+            for (const record of batch) {
+                const saved = await upsertToSupabase('daily_closing_prices', record);
+                if (saved) {
+                    success++;
+                } else {
+                    errors++;
+                }
+            }
+            console.log(`📦 ব্যাচ ${Math.floor(i/batchSize)+1} সম্পন্ন (${success}/${i+batch.length})`);
+        }
+
+        console.log(`✅ দৈনিক ক্লোজিং আপডেট সম্পন্ন! সফল: ${success}, ব্যর্থ: ${errors}`);
+
+    } catch (err) {
+        console.error('❌ দৈনিক ক্লোজিং আপডেট ব্যর্থ:', err.message);
+        if (err.response) {
+            console.error('📄 রেসপন্স স্ট্যাটাস:', err.response.status);
+        }
+    }
+}
+
+// ==========================================
+// 🚀 মেইন ফাংশন
+// ==========================================
+async function startScraper() {
+    console.log(`🕐 ${new Date().toISOString()} - CSE দৈনিক ক্লোজিং আপডেট শুরু...`);
+    await updateDailyClosing();
+    console.log('✅ স্ক্রিপ্ট সম্পন্ন!');
+}
+
+// ==========================================
+// 🔥 রান
+// ==========================================
+if (require.main === module) {
+    startScraper().catch(err => {
+        console.error('❌ Fatal error:', err);
+        process.exit(1);
+    });
+}
+
+module.exports = { startScraper, updateDailyClosing };
