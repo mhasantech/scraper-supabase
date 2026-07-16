@@ -1,13 +1,10 @@
 // scripts/cse_scraper.js
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { createClient } = require('@supabase/supabase-js');
-const WebSocket = require('ws');
-const fetch = require('node-fetch');        // 🔥 নতুন
 const https = require('https');
 
 // ==========================================
-// 📌 কনফিগারেশন ও Supabase ক্লায়েন্ট (কাস্টম fetch সহ)
+// 📌 কনফিগারেশন
 // ==========================================
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -17,22 +14,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     process.exit(1);
 }
 
-// 🔧 HTTPS এজেন্ট (SSL সনদপত্রের সমস্যা এড়াতে)
 const agent = new https.Agent({ rejectUnauthorized: false });
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false },
-    realtime: {
-        transport: WebSocket,
-        autoConnect: false
-    },
-    // কাস্টম fetch ফাংশন যা agent ব্যবহার করবে
-    fetch: (url, options) => {
-        return fetch(url, { ...options, agent });
-    }
-});
-
-console.log('✅ Supabase ক্লায়েন্ট প্রস্তুত (কাস্টম fetch সহ)');
 
 // ==========================================
 // 🕐 বাংলাদেশ সময় চেক
@@ -49,13 +31,43 @@ function isWithinTradingHours() {
 }
 
 // ==========================================
-// 📡 একক কোম্পানি স্ক্র্যাপ ও আপসার্ট
+// 📡 Supabase-এ আপসার্ট (REST API)
+// ==========================================
+async function upsertToSupabase(table, record, conflictKey) {
+    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+    };
+
+    try {
+        const response = await axios.post(url, record, {
+            headers,
+            httpsAgent: agent,
+            timeout: 10000
+        });
+        // 201 Created বা 200 OK সফল
+        if (response.status === 201 || response.status === 200) {
+            return true;
+        }
+        console.warn(`⚠️ অপ্রত্যাশিত স্ট্যাটাস: ${response.status}`);
+        return false;
+    } catch (err) {
+        console.error(`❌ আপসার্ট ব্যর্থ (${record.code || record.ticker}):`, err.message);
+        return false;
+    }
+}
+
+// ==========================================
+// 📡 একক কোম্পানি স্ক্র্যাপ
 // ==========================================
 async function scrapeSingleCompany(companyCode, todayDate) {
     const detailUrl = `https://www.cse.com.bd/index.php?/company/companydetails/${companyCode}`;
     try {
         const { data } = await axios.get(detailUrl, {
-            httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+            httpsAgent: agent,
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
         });
 
@@ -105,14 +117,9 @@ async function scrapeSingleCompany(companyCode, todayDate) {
             info.pe_ratio = (ltpNum / epsNum).toFixed(2);
         }
 
-        // 🟢 Supabase-এ আপসার্ট
-        const { error } = await supabase
-            .from('cse_market_data')
-            .upsert(info, { onConflict: 'code, date' });
-
-        if (error) {
-            console.error(`❌ আপসার্ট ব্যর্থ (${companyCode}):`, error.message);
-        } else {
+        // 🟢 Supabase REST API-তে আপসার্ট
+        const success = await upsertToSupabase('cse_market_data', info, 'code, date');
+        if (success) {
             console.log(`✅ CSE: ${companyCode} -> LTP: ${info.ltp}`);
         }
 
@@ -136,7 +143,7 @@ async function startScraper() {
 
     try {
         const { data } = await axios.get(listUrl, {
-            httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+            httpsAgent: agent,
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
 
