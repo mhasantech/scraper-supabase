@@ -2,8 +2,8 @@ name: Scrape DSE Market Data
 
 on:
   schedule:
-    - cron: '*/10 * * * *'      # প্রতি ১০ মিনিটে রান হবে
-  workflow_dispatch:            # ম্যানুয়ালি রান করার জন্য
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -14,14 +14,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Remove package-lock.json (if exists)
+        run: rm -f package-lock.json
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies (without lock file)
+        run: npm install --no-package-lock
 
       - name: Run scraper
         run: npm start
