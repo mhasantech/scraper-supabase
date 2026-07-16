@@ -3,16 +3,24 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const WebSocket = require('ws');   // ✅ ws প্যাকেজ যোগ করুন
 
+// ==========================================
 // 📌 কনফিগারেশন
+// ==========================================
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const SCRAPER_API = process.env.SCRAPER_API || 'https://dse-scraper.vercel.app/api';
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE) || 10;
 const DRY_RUN = process.argv.includes('--dry-run');
 
-// 📌 স্টক লিস্ট লোড (আপনার dseStocks অ্যারে)
+// 🔁 মাল্টিপল API এন্ডপয়েন্ট (একটা কাজ না করলে অন্যটা চেষ্টা করবে)
+const API_ENDPOINTS = [
+    process.env.SCRAPER_API || 'https://dse-scraper.vercel.app/api',
+    'https://dse-scraper.vercel.app/api',  // ফ্যালব্যাক
+];
+
+// ==========================================
+// 📌 স্টক লিস্ট লোড
+// ==========================================
 const STOCKS_FILE = path.join(__dirname, '../data/stocks.json');
 let stockList = [];
 
@@ -30,70 +38,124 @@ try {
     process.exit(1);
 }
 
-// 📌 Supabase ক্লায়েন্ট (✅ transport: ws যোগ করুন)
+// ==========================================
+// 📌 Supabase ক্লায়েন্ট (WebSocket ফিক্স সহ)
+// ==========================================
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    console.error('❌ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in environment');
+    console.error('❌ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
     process.exit(1);
 }
 
-// 🟢 এখানে transport: ws যোগ করুন
+// WebSocket সমর্থন নাই বলে সরাসরি REST API ব্যবহার করছি
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    realtime: {
-        transport: WebSocket
-    }
+    auth: { persistSession: false },
+    realtime: { enabled: false }  // 👈 WebSocket বন্ধ করে দিচ্ছি
 });
 
-// বাকি কোড আগের মতোই থাকবে...
 // ==========================================
-// 📡 স্ক্র্যাপার ফাংশন
+// 📡 স্ক্র্যাপার ফাংশন (Retry সহ)
 // ==========================================
 
-async function fetchStockData(ticker) {
-    try {
-        const url = `${SCRAPER_API}?symbol=${encodeURIComponent(ticker)}`;
-        const response = await axios.get(url, { timeout: 10000 });
-        const data = response.data;
-
-        if (!data || !data.ltp || parseFloat(data.ltp) <= 0) {
-            console.warn(`⚠️ No valid data for ${ticker}`);
-            return null;
+async function fetchWithRetry(url, options = {}, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const response = await axios.get(url, { 
+                timeout: 15000,
+                ...options,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    ...options.headers
+                }
+            });
+            
+            // চেক করুন response JSON কিনা
+            if (typeof response.data === 'string' && response.data.startsWith('<!DOCTYPE')) {
+                throw new Error('Received HTML instead of JSON - API may be down');
+            }
+            
+            return response;
+        } catch (err) {
+            console.warn(`⚠️ Attempt ${i+1}/${retries} failed:`, err.message);
+            if (i === retries - 1) throw err;
+            // ব্যাকঅফ: ১সে, ২সে, ৩সে
+            await new Promise(r => setTimeout(r, (i+1) * 1000));
         }
-
-        return {
-            ticker: ticker,
-            date: new Date().toISOString().split('T')[0],
-            ltp: parseFloat(data.ltp) || 0,
-            high: parseFloat(data.high) || 0,
-            low: parseFloat(data.low) || 0,
-            volume: parseInt(data.volume) || 0,
-            category: data.category || null,
-            dividend: data.dividend || null,
-            record_date: data.record_date || null,
-            updated_at: new Date().toISOString()
-        };
-    } catch (err) {
-        console.warn(`⚠️ Failed to fetch ${ticker}:`, err.message);
-        return null;
     }
 }
 
-async function fetchDSEXIndex() {
-    try {
-        // DSEX ইনডেক্স ডেটা আনতে পারেন dse-scraper API থেকে, অথবা অন্য কোনো সোর্স
-        // যদি API না থাকে, তাহলে আমরা ডেটাবেস থেকে সর্বশেষ মানও ব্যবহার করতে পারি
-        const response = await axios.get(`${SCRAPER_API}/index`, { timeout: 10000 });
-        if (response.data && response.data.dsex) {
+async function fetchStockData(ticker) {
+    let lastError = null;
+
+    // সব API এন্ডপয়েন্ট চেষ্টা করি
+    for (const baseUrl of API_ENDPOINTS) {
+        try {
+            const url = `${baseUrl}?symbol=${encodeURIComponent(ticker)}`;
+            const response = await fetchWithRetry(url);
+            const data = response.data;
+
+            if (!data || !data.ltp || parseFloat(data.ltp) <= 0) {
+                console.warn(`⚠️ No valid data for ${ticker} from ${baseUrl}`);
+                continue;
+            }
+
             return {
+                ticker: ticker,
                 date: new Date().toISOString().split('T')[0],
-                value: parseFloat(response.data.dsex) || 0,
+                ltp: parseFloat(data.ltp) || 0,
+                high: parseFloat(data.high) || 0,
+                low: parseFloat(data.low) || 0,
+                volume: parseInt(data.volume) || 0,
+                category: data.category || null,
+                dividend: data.dividend || null,
+                record_date: data.record_date || null,
                 updated_at: new Date().toISOString()
             };
+        } catch (err) {
+            lastError = err;
+            console.warn(`⚠️ Failed to fetch ${ticker} from ${baseUrl}:`, err.message);
         }
-        return null;
-    } catch (err) {
-        console.warn('⚠️ Failed to fetch DSEX index:', err.message);
-        return null;
     }
+
+    // সব চেষ্টা ব্যর্থ হলে null রিটার্ন
+    console.warn(`❌ All attempts failed for ${ticker}`);
+    return null;
+}
+
+async function fetchDSEXIndex() {
+    for (const baseUrl of API_ENDPOINTS) {
+        try {
+            // চেষ্টা ১: /index এন্ডপয়েন্ট
+            const url1 = `${baseUrl}/index`;
+            const response1 = await fetchWithRetry(url1, {}, 2);
+            if (response1.data && response1.data.dsex) {
+                return {
+                    date: new Date().toISOString().split('T')[0],
+                    value: parseFloat(response1.data.dsex) || 0,
+                    updated_at: new Date().toISOString()
+                };
+            }
+        } catch (err) {
+            console.warn('⚠️ DSEX /index failed, trying alternative...', err.message);
+        }
+
+        try {
+            // চেষ্টা ২: main API থেকে dsex বের করা (যদি থাকে)
+            const url2 = `${baseUrl}?symbol=DSEX`;
+            const response2 = await fetchWithRetry(url2, {}, 2);
+            if (response2.data && response2.data.ltp) {
+                return {
+                    date: new Date().toISOString().split('T')[0],
+                    value: parseFloat(response2.data.ltp) || 0,
+                    updated_at: new Date().toISOString()
+                };
+            }
+        } catch (err) {
+            console.warn('⚠️ DSEX alternative failed:', err.message);
+        }
+    }
+    
+    console.warn('⚠️ Could not fetch DSEX index from any source');
+    return null;
 }
 
 async function upsertMarketData(records) {
@@ -124,45 +186,19 @@ async function upsertMarketData(records) {
     }
 }
 
-async function upsertDSEX(record) {
-    if (DRY_RUN) {
-        console.log('🔍 DRY RUN: Would upsert DSEX:', record);
-        return { success: record ? 1 : 0, errors: 0 };
-    }
-
-    if (!record) return { success: 0, errors: 0 };
-
-    try {
-        const { error } = await supabase
-            .from('dsex_index')
-            .upsert(record, {
-                onConflict: 'date',
-                ignoreDuplicates: false
-            });
-
-        if (error) {
-            console.error('❌ DSEX upsert error:', error.message);
-            return { success: 0, errors: 1 };
-        }
-        return { success: 1, errors: 0 };
-    } catch (err) {
-        console.error('❌ DSEX upsert exception:', err.message);
-        return { success: 0, errors: 1 };
-    }
-}
-
 // ==========================================
-// 🚀 মেইন ফাংশন (রান)
+// 🚀 মেইন ফাংশন
 // ==========================================
 
 async function runScraper() {
     console.log(`🕐 ${new Date().toISOString()} - Starting DSE scraper...`);
     console.log(`📊 Total stocks: ${stockList.length}`);
+    console.log(`🔗 Using API endpoints: ${API_ENDPOINTS.join(', ')}`);
 
     let totalSuccess = 0;
     let totalErrors = 0;
 
-    // 📌 স্টক ডেটা ব্যাচে প্রসেস
+    // স্টক ডেটা ব্যাচে প্রসেস
     for (let i = 0; i < stockList.length; i += BATCH_SIZE) {
         const batch = stockList.slice(i, i + BATCH_SIZE);
         console.log(`📡 Fetching batch ${Math.floor(i/BATCH_SIZE)+1}/${Math.ceil(stockList.length/BATCH_SIZE)} (${batch.length} stocks)`);
@@ -185,13 +221,12 @@ async function runScraper() {
             totalErrors += upsertResult.errors;
         }
 
-        // রেট লিমিট এড়াতে ১ সেকেন্ড বিরতি
         if (i + BATCH_SIZE < stockList.length) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 1500));
         }
     }
 
-    // 📌 DSEX ইনডেক্স (যদি পাওয়া যায়)
+    // DSEX ইনডেক্স
     console.log('📈 Fetching DSEX index...');
     const dsexData = await fetchDSEXIndex();
     if (dsexData) {
@@ -202,13 +237,35 @@ async function runScraper() {
         console.log('ℹ️ No DSEX data fetched (skipping)');
     }
 
-    // 📊 সারাংশ
     console.log('✅ Scrape completed!');
     console.log(`📊 Success: ${totalSuccess}, Errors: ${totalErrors}`);
     console.log(`🕐 ${new Date().toISOString()}`);
 
     if (totalErrors > 0) {
-        process.exit(1); // GitHub Actions-এ ফেইল দেখাতে
+        process.exit(1);
+    }
+}
+
+async function upsertDSEX(record) {
+    if (DRY_RUN) {
+        console.log('🔍 DRY RUN: Would upsert DSEX:', record);
+        return { success: record ? 1 : 0, errors: 0 };
+    }
+    if (!record) return { success: 0, errors: 0 };
+
+    try {
+        const { error } = await supabase
+            .from('dsex_index')
+            .upsert(record, { onConflict: 'date' });
+
+        if (error) {
+            console.error('❌ DSEX upsert error:', error.message);
+            return { success: 0, errors: 1 };
+        }
+        return { success: 1, errors: 0 };
+    } catch (err) {
+        console.error('❌ DSEX upsert exception:', err.message);
+        return { success: 0, errors: 1 };
     }
 }
 
