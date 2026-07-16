@@ -2,6 +2,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');
 const https = require('https');
 
 // ==========================================
@@ -17,7 +18,10 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false },
-    realtime: { autoConnect: false }
+    realtime: {
+        transport: WebSocket,
+        autoConnect: false
+    }
 });
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -152,11 +156,9 @@ async function startScraper() {
     console.log(`🕐 ${new Date().toISOString()} - DSE স্ক্র্যাপিং শুরু...`);
     const todayDate = new Date().toISOString().split('T')[0];
 
-    // DSEX ইনডেক্স
     await scrapeDSEIndices(todayDate);
     await delay(2000);
 
-    // কোম্পানি তালিকা (CSE ডেটা থেকে বা ব্যাকআপ)
     let companies = [];
     try {
         const { data, error } = await supabase
