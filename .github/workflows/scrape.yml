@@ -1,4 +1,4 @@
-name: Market Scraper (CSE + DSE + DSEX + Daily Closing + Migration)
+name: Market Scraper (CSE + DSE + DSEX + Daily Closing)
 
 on:
   schedule:
@@ -64,31 +64,3 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/update_daily_closing.js
-
-  # ==========================================
-  # 🚀 মাইগ্রেশন জব (শুধু ম্যানুয়ালি রানের জন্য)
-  # ==========================================
-  migrate-data:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    timeout-minutes: 15
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Run Firebase → Supabase Migration
-        env:
-          FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node scripts/migrate_firebase_to_supabase.js
