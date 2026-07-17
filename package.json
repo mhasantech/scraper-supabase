@@ -1,15 +1,21 @@
 {
   "name": "market-scraper-supabase",
   "version": "1.0.0",
-  "description": "CSE & DSE Scraper with Supabase REST API",
+  "description": "CSE & DSE Scraper with Supabase + Firebase Migration",
   "main": "scripts/cse_scraper.js",
   "scripts": {
-    "start": "node scripts/cse_scraper.js && node scripts/dse_scraper.js"
+    "start": "node scripts/cse_scraper.js && node scripts/dse_scraper.js",
+    "dsex": "node scripts/dsex_scraper.js",
+    "daily-closing": "node scripts/update_daily_closing.js",
+    "migrate": "node scripts/migrate_firebase_to_supabase.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "cheerio": "^1.0.0-rc.12"
     "@supabase/supabase-js": "^2.45.0",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
     "firebase-admin": "^11.11.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
