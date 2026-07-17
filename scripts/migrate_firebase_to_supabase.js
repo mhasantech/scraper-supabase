@@ -59,7 +59,6 @@ async function upsertBatchToSupabase(table, records) {
             httpsAgent: agent,
             timeout: 30000
         });
-        // 201 = Created, 200 = OK (update)
         if (response.status === 201 || response.status === 200) {
             return { success: records.length, errors: 0 };
         }
@@ -149,7 +148,6 @@ async function migrateCollection(firebaseCollection, supabaseTable, transformFn)
 
         console.log(`📊 ${records.length} documents to migrate`);
 
-        // ব্যাচে ৫০টি করে আপসার্ট
         const batchSize = 50;
         let success = 0, errors = 0;
 
@@ -160,7 +158,6 @@ async function migrateCollection(firebaseCollection, supabaseTable, transformFn)
             errors += result.errors;
             const pct = Math.round(((i + batch.length) / records.length) * 100);
             console.log(`📊 ${firebaseCollection}: ${i + batch.length}/${records.length} (${pct}%)`);
-            // রেট লিমিট এড়াতে বিরতি
             await new Promise(r => setTimeout(r, 200));
         }
 
