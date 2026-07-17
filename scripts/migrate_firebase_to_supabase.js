@@ -67,7 +67,6 @@ async function upsertBatchToSupabase(table, records) {
         return { success: 0, errors: records.length };
     } catch (err) {
         if (err.response && err.response.status === 409) {
-            // 409 মানে ডুপ্লিকেট, কিন্তু merge-duplicates থাকায় এটা আসার কথা না, তবুও ধরলাম
             console.log(`ℹ️ ডুপ্লিকেট (${table}), ইগনোর করা হচ্ছে।`);
             return { success: records.length, errors: 0 };
         }
