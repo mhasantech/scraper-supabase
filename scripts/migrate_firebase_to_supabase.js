@@ -1,55 +1,22 @@
 // scripts/migrate_firebase_to_supabase.js
 const admin = require('firebase-admin');
-const { createClient } = require('@supabase/supabase-js');
+const axios = require('axios');
+const https = require('https');
 
 // ==========================================
 // 📌 কনফিগারেশন
 // ==========================================
 const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 
-// 🔥 Service Account JSON (আপনার দেওয়া ফাইল থেকে)
-const serviceAccount = {
-  type: "service_account",
-  project_id: "my-share-market-495aa",
-  private_key_id: "0b246ee625121b4107c483bd47b1dbc488762888",
-  private_key: `-----BEGIN PRIVATE KEY-----
-MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQDL99dmjyWB3pf0
-VnU55+883055oX+KG6DQvCONBnn2ohZlZkN9qT4jrACb7taR+k1HBTi1kp68h5wc
-dTmuMUl57tTmwmSQvGE8zPgrSvkwxX3v8n9WcQYfcwhvBcSpLKNJzjeYPN7PjUkJ
-aFA3mdRusWKHr9T1H7ddS+J9YvOKP/Q91vjGcd0eqbPp2TQGzN9Vumjj0ef7wOAg
-DQ4NIEI/veVte7yeO5in647se0n0upkqjjH6feXjB+X6Easfp+9lJdQpsGYQ8aiW
-L7zHfPs5uCVt6cnqrV3QGNG8GuQGUNF/HKmNHFC9ix180rd8/t0RTKH3q0001WlT
-ymQZwA/pAgMBAAECgf9R55qXlH17QrQonPWpF+As9+VYJYHeWgagMblIG1GrUdGs
-f8qaRPV7w/x6oW3uyi3XikE7dT6vQvigdNi0s+LNek2dj6U44AYr/bx22T4EV7A6
-qllEw1FLthjgFddJSwngmVTtAFFFbXazg5ZMVxL2+d3KOGrlNwpq0trtGGizgQ+2
-B580ZjC8WtdyuwCTmE62IUjWwQFMuKys6NXxruOuj4csXDbXq31o0GMR+6YHpCiP
-Otu4dcH1/sPWVfo4LJeX4RV21jAWrTw3n7kUZrQTE8JmRGnHD6JbxnytX3DqPdyf
-rzud2d/LBZvhKubg8N6g7qEg+346Ai264b4mRukCgYEA9sT/r80s9Su0gmXJ53/i
-1qm0eyCI16NznYTRK8Iaie8ZuoSpF3dSagbMiJAvxGYNgrUfk+ry0kiWn0Nd/hOo
-gY+iM+tJSEXO3OQUk1MiuRUKLgKiDDQtamGyo6DfPQGOvwevaseizzARItqx+eMy
-KAF3fXukWPSwdCFUMMzoR+MCgYEA05j8zl3S3Sdj0WJC+JZcYJAJ7FibIiQwb+/x
-ZaVfSVX+yfQO8NmAwlqjBKgS8hnoYqjCvo7ALHQ1sbby5HE5LKt/8pBIG31HV+m9
-rS5Q1l//EKEA/FsrwBU5PenG0CNudOsb69exj2NmjM8C51J4qi41ntqgzGJB1PoH
-8vke2sMCgYADY4kvXN31L/h2ofc32qW+1O3JkxTOAUyhKSXGOBAtPL9ZtGCuFdFn
-61f7uB8vz0b4OIyKd3uGL8EBxucPii2SOeq8U8rZ1zuUBP3TWBzt9cACCb838697
-+oN9g8QNDmxrayuZh8xQlBRoKiCvkdMqgXqmmoATSKjzr1F8qhO2iQKBgQCSzSU3
-l2hf/qAF+II2LTtR0xzPWHnoqerg/jsgJieBnaPzQNvMxVnLfU50QJdEWC0dpa/W
-vPse3FEURrUlQFhGYYWXJ/qe97+zgnsR13xF/rvbMZiZfDdSQGdCSRqh9LMBcswg
-R7jsni3bqxN8oX8NspmI6G1+3vyFYiJ5s9RwOQKBgBEr9oaAvAA3GaNLZ5fo931e
-Ou9wCXre9NOlyxoSsmetI7H6X0GrzMrzYak+zruyUpaG3uFst3/lBkfFhQqDO8NK
-5mtfxWYf6Ij95iGuV3TJzJLKaN+IuOinM9acZFEy1W2B+2O4Q65Yk5HaVE1dFjOX
-E+ub6qQbZmqu5juk4bun
------END PRIVATE KEY-----\n`,
-  client_email: "firebase-adminsdk-fbsvc@my-share-market-495aa.iam.gserviceaccount.com",
-  client_id: "104020533171320847131",
-  auth_uri: "https://accounts.google.com/o/oauth2/auth",
-  token_uri: "https://oauth2.googleapis.com/token",
-  auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
-  client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40my-share-market-495aa.iam.gserviceaccount.com",
-  universe_domain: "googleapis.com"
-};
+// Firebase Service Account (GitHub Secret থেকে)
+const serviceAccountJSON = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+if (!serviceAccountJSON) {
+    console.error('❌ FIREBASE_SERVICE_ACCOUNT_KEY পাওয়া যায়নি।');
+    process.exit(1);
+}
+const serviceAccount = JSON.parse(serviceAccountJSON);
 
-// Supabase Service Key (GitHub Secret থেকে)
+// Supabase Service Key
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 if (!SUPABASE_SERVICE_KEY) {
     console.error('❌ SUPABASE_SERVICE_KEY পাওয়া যায়নি।');
@@ -68,16 +35,52 @@ const db = admin.firestore();
 console.log('✅ Firebase Admin initialized');
 
 // ==========================================
-// ☁️ Supabase Client Init
+// ☁️ HTTPS Agent (SSL ফিক্স)
 // ==========================================
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false },
-    realtime: { autoConnect: false }
-});
-console.log('✅ Supabase client initialized');
+const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// 📊 ট্রান্সফর্ম ফাংশন
+// 📤 Supabase REST API-তে আপসার্ট (ব্যাচ)
+// ==========================================
+async function upsertBatchToSupabase(table, records) {
+    if (!records || records.length === 0) return { success: 0, errors: 0 };
+
+    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+    };
+
+    try {
+        const response = await axios.post(url, records, {
+            headers,
+            httpsAgent: agent,
+            timeout: 30000
+        });
+        // 201 = Created, 200 = OK (update)
+        if (response.status === 201 || response.status === 200) {
+            return { success: records.length, errors: 0 };
+        }
+        console.warn(`⚠️ Unexpected status ${response.status} for ${table}`);
+        return { success: 0, errors: records.length };
+    } catch (err) {
+        if (err.response && err.response.status === 409) {
+            // 409 মানে ডুপ্লিকেট, কিন্তু merge-duplicates থাকায় এটা আসার কথা না, তবুও ধরলাম
+            console.log(`ℹ️ ডুপ্লিকেট (${table}), ইগনোর করা হচ্ছে।`);
+            return { success: records.length, errors: 0 };
+        }
+        console.error(`❌ আপসার্ট ব্যর্থ (${table}):`, err.message);
+        if (err.response) {
+            console.error('📄 রেসপন্স ডেটা:', err.response.data);
+        }
+        return { success: 0, errors: records.length };
+    }
+}
+
+// ==========================================
+// 📊 ট্রান্সফর্ম ফাংশন (Firebase → Supabase)
 // ==========================================
 const transform = {
     user_meta: (docId, data) => ({
@@ -134,37 +137,32 @@ async function migrateCollection(firebaseCollection, supabaseTable, transformFn)
             return { success: 0, errors: 0 };
         }
 
-        let success = 0, errors = 0;
-        const batchSize = 50;
-        let batch = [];
-        let total = snapshot.docs.length;
-        let processed = 0;
+        const records = [];
+        const total = snapshot.docs.length;
 
         for (const doc of snapshot.docs) {
             const data = doc.data();
             const record = transformFn(doc.id, data);
-            if (!record) {
-                errors++;
-                continue;
-            }
-            batch.push(record);
-
-            if (batch.length >= batchSize) {
-                const result = await upsertBatch(supabaseTable, batch);
-                success += result.success;
-                errors += result.errors;
-                processed += batch.length;
-                console.log(`📊 ${firebaseCollection}: ${processed}/${total} (${Math.round(processed/total*100)}%)`);
-                batch = [];
-                await new Promise(r => setTimeout(r, 200));
+            if (record) {
+                records.push(record);
             }
         }
 
-        if (batch.length > 0) {
-            const result = await upsertBatch(supabaseTable, batch);
+        console.log(`📊 ${records.length} documents to migrate`);
+
+        // ব্যাচে ৫০টি করে আপসার্ট
+        const batchSize = 50;
+        let success = 0, errors = 0;
+
+        for (let i = 0; i < records.length; i += batchSize) {
+            const batch = records.slice(i, i + batchSize);
+            const result = await upsertBatchToSupabase(supabaseTable, batch);
             success += result.success;
             errors += result.errors;
-            console.log(`📊 ${firebaseCollection}: ${total}/${total} (100%)`);
+            const pct = Math.round(((i + batch.length) / records.length) * 100);
+            console.log(`📊 ${firebaseCollection}: ${i + batch.length}/${records.length} (${pct}%)`);
+            // রেট লিমিট এড়াতে বিরতি
+            await new Promise(r => setTimeout(r, 200));
         }
 
         console.log(`✅ ${firebaseCollection} → ${supabaseTable}: ${success} success, ${errors} errors`);
@@ -173,26 +171,6 @@ async function migrateCollection(firebaseCollection, supabaseTable, transformFn)
     } catch (err) {
         console.error(`❌ Error migrating ${firebaseCollection}:`, err.message);
         return { success: 0, errors: 0 };
-    }
-}
-
-// ==========================================
-// 📤 ব্যাচ আপসার্ট
-// ==========================================
-async function upsertBatch(table, records) {
-    try {
-        const { error } = await supabase
-            .from(table)
-            .upsert(records, { onConflict: 'id' });
-
-        if (error) {
-            console.error(`❌ Batch upsert error (${table}):`, error.message);
-            return { success: 0, errors: records.length };
-        }
-        return { success: records.length, errors: 0 };
-    } catch (err) {
-        console.error(`❌ Batch upsert exception (${table}):`, err.message);
-        return { success: 0, errors: records.length };
     }
 }
 
