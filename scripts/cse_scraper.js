@@ -17,15 +17,17 @@ if (!SUPABASE_SERVICE_KEY) {
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// 📡 Supabase REST API-তে আপসার্ট (409 ফিক্স)
+// 📡 Supabase REST API-তে আপসার্ট (on_conflict + সঠিক স্ট্যাটাস হ্যান্ডলিং)
 // ==========================================
 async function upsertToSupabase(table, record) {
-    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    // cse_market_data টেবিলের unique key হলো (code, date)
+    const conflictColumns = 'code,date';
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumns}`;
+    
     const headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
         'Content-Type': 'application/json',
-        // 🔥 এই হেডারটি ডুপ্লিকেট থাকলে আপডেট করে, ৪০৯ দেয় না
         'Prefer': 'resolution=merge-duplicates'
     };
 
@@ -35,18 +37,28 @@ async function upsertToSupabase(table, record) {
             httpsAgent: agent,
             timeout: 15000
         });
-        // ২০১ = Created, ২০০ = OK (আপডেট)
-        if (response.status === 201 || response.status === 200) {
+
+        // Supabase ২০০, ২০১, ২০২, ২০৪ – সবগুলোই সফল রেসপন্স
+        if ([200, 201, 202, 204].includes(response.status)) {
             return true;
         }
+
+        // অজানা স্ট্যাটাস পেলে সতর্কতা
+        console.warn(`⚠️ অজানা স্ট্যাটাস ${response.status} (${table})`);
         return false;
+
     } catch (err) {
-        // ৪০৯ এলেও সেটাকে আমরা আপসার্ট সফল হিসেবে ধরছি (কারণ ডুপ্লিকেট ইগনোর)
+        // on_conflict থাকায় ৪০৯ আসার কথা না, তবু এসে থাকলে সেটা এরর
         if (err.response && err.response.status === 409) {
-            console.log(`ℹ️ ডুপ্লিকেট পাওয়া গেছে (${record.code}), ইগনোর করা হচ্ছে।`);
-            return true; // সফল হিসেবে ধরা
+            console.error(`❌ কনফ্লিক্ট! on_conflict কাজ করছে না (${record.code})`);
+            return false;
         }
-        console.error(`❌ আপসার্ট ব্যর্থ (${record.code || record.ticker}):`, err.message);
+
+        // অন্যান্য এরর লগ করুন
+        console.error(`❌ আপসার্ট ব্যর্থ (${record.code}):`, err.message);
+        if (err.response) {
+            console.error('📄 রেসপন্স ডেটা:', err.response.data);
+        }
         return false;
     }
 }
@@ -113,6 +125,8 @@ async function scrapeSingleCompany(companyCode, todayDate) {
         const success = await upsertToSupabase('cse_market_data', info);
         if (success) {
             console.log(`✅ CSE: ${companyCode} -> LTP: ${info.ltp}`);
+        } else {
+            console.log(`❌ CSE: ${companyCode} -> আপসার্ট ব্যর্থ`);
         }
 
     } catch (err) {
