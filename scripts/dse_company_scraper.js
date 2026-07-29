@@ -3,9 +3,6 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const https = require('https');
 
-// ==========================================
-// 📌 কনফিগারেশন (সঠিক URL)
-// ==========================================
 const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
@@ -16,9 +13,6 @@ if (!SUPABASE_SERVICE_KEY) {
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-// ==========================================
-// 🕐 ট্রেডিং আওয়ার চেক (শুধু অটো রানের জন্য)
-// ==========================================
 function isWithinTradingHours() {
     const now = new Date();
     const bdTime = new Date(now.getTime() + 6 * 60 * 60 * 1000);
@@ -30,16 +24,14 @@ function isWithinTradingHours() {
     return current >= start && current <= end;
 }
 
-// ==========================================
-// 🔍 চেক করুন এটি ম্যানুয়াল রান কিনা
-// ==========================================
 const IS_MANUAL_RUN = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
 
 // ==========================================
-// 📡 Supabase REST API আপসার্ট
+// 📡 আপসার্ট (on_conflict code,date)
 // ==========================================
 async function upsertToSupabase(table, record) {
-    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const conflictColumns = 'code,date';
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumns}`;
     const headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
@@ -53,16 +45,22 @@ async function upsertToSupabase(table, record) {
             httpsAgent: agent,
             timeout: 15000
         });
-        return response.status === 201 || response.status === 200;
+        if ([200, 201, 202, 204].includes(response.status)) {
+            return true;
+        }
+        console.warn(`⚠️ অজানা স্ট্যাটাস ${response.status} (${table})`);
+        return false;
     } catch (err) {
+        if (err.response && err.response.status === 409) {
+            console.error(`❌ কনফ্লিক্ট! on_conflict কাজ করছে না (${record.code})`);
+            return false;
+        }
         console.error(`❌ আপসার্ট ব্যর্থ (${record.code}):`, err.message);
+        if (err.response) console.error('📄 রেসপন্স:', err.response.data);
         return false;
     }
 }
 
-// ==========================================
-// 📡 ডিভিডেন্ড পার্স হেল্পার
-// ==========================================
 function parseDividendHistory(text, type) {
     const result = {};
     if (!text || text === "N/A" || text === "-") return result;
@@ -81,21 +79,15 @@ function parseDividendHistory(text, type) {
     return result;
 }
 
-// ==========================================
-// 📡 DSE API থেকে কোম্পানির বিস্তারিত ডেটা
-// ==========================================
 async function fetchDSECompanyData(companyCode, todayDate) {
     const apiUrl = `https://dse-scrape.vercel.app/api/scrape?action=all&tradingCode=${companyCode}`;
     try {
         const response = await axios.get(apiUrl, { timeout: 20000 });
         if (response.data?.success && response.data?.data?.details) {
             const details = response.data.data.details;
-
-            // ডিভিডেন্ড ইতিহাস পার্স করুন
             const cashDiv = parseDividendHistory(details.cashDividend || "", "cash");
             const stockDiv = parseDividendHistory(details.stockDividend || "", "stock");
 
-            // রেকর্ড তৈরি
             const record = {
                 code: companyCode,
                 date: todayDate,
@@ -107,10 +99,11 @@ async function fetchDSECompanyData(companyCode, todayDate) {
                 updated_at: new Date().toISOString()
             };
 
-            // Supabase-এ আপসার্ট
             const success = await upsertToSupabase('dse_company_data', record);
             if (success) {
                 console.log(`✅ DSE: ${companyCode} -> সেভ হয়েছে`);
+            } else {
+                console.log(`❌ DSE: ${companyCode} -> সেভ ব্যর্থ`);
             }
             return success;
         }
@@ -121,24 +114,19 @@ async function fetchDSECompanyData(companyCode, todayDate) {
     }
 }
 
-// ==========================================
-// 🚀 মেইন ফাংশন
-// ==========================================
 async function startScraper() {
-    // ⏰ অটো রানে ট্রেডিং আওয়ার চেক, ম্যানুয়াল রানে চেক করবে না
     if (!IS_MANUAL_RUN && !isWithinTradingHours()) {
         console.log(`⏳ ট্রেডিং আওয়ারের বাইরে। অটো রান স্কিপ করছি।`);
         process.exit(0);
     }
 
     if (IS_MANUAL_RUN) {
-        console.log(`🔧 ম্যানুয়াল রান সনাক্ত করা হয়েছে। ট্রেডিং আওয়ার চেক বাইপাস করা হচ্ছে।`);
+        console.log(`🔧 ম্যানুয়াল রান সনাক্ত করা হয়েছে। ট্রেডিং আওয়ার চেক বাইপাস।`);
     }
 
     console.log(`🕐 ${new Date().toISOString()} - DSE কোম্পানি স্ক্র্যাপ শুরু...`);
     const todayDate = new Date().toISOString().split('T')[0];
 
-    // কোম্পানি তালিকা (CSE ডেটা থেকে পড়া)
     let companies = [];
     try {
         const url = `${SUPABASE_URL}/rest/v1/cse_market_data?select=code&date=eq.${todayDate}`;
@@ -154,7 +142,6 @@ async function startScraper() {
         console.warn("⚠️ CSE ডেটা থেকে তালিকা পড়া যায়নি, ব্যাকআপ ব্যবহার করছি...");
     }
 
-    // ব্যাকআপ লিস্ট (যদি CSE ডেটা না পাওয়া যায়)
     if (companies.length === 0) {
         companies = ["UTTARABANK", "BDTHAI", "ACI", "BEXIMCO", "BATBC", "GP", "LHBL", "SQURPHARMA"];
     }
@@ -174,9 +161,6 @@ async function startScraper() {
     console.log(`✅ DSE স্ক্র্যাপ সম্পন্ন! সফল: ${successCount}, মোট: ${companies.length}`);
 }
 
-// ==========================================
-// 🔥 রান
-// ==========================================
 startScraper().catch(err => {
     console.error('❌ Fatal error:', err);
     process.exit(1);
