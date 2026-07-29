@@ -3,9 +3,6 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const https = require('https');
 
-// ==========================================
-// 📌 Supabase কনফিগারেশন
-// ==========================================
 const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
@@ -17,10 +14,11 @@ if (!SUPABASE_SERVICE_KEY) {
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// 📡 Supabase REST API-তে আপসার্ট
+// 📡 DSEX আপসার্ট (on_conflict index_name,date)
 // ==========================================
 async function upsertToSupabase(table, record) {
-    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    const conflictColumns = 'index_name,date';
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumns}`;
     const headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
@@ -34,22 +32,24 @@ async function upsertToSupabase(table, record) {
             httpsAgent: agent,
             timeout: 15000
         });
-        if (response.status === 201 || response.status === 200) {
+        if ([200, 201, 202, 204].includes(response.status)) {
             return true;
         }
+        console.warn(`⚠️ অজানা স্ট্যাটাস ${response.status} (${table})`);
         return false;
     } catch (err) {
         if (err.response && err.response.status === 409) {
-            console.log(`ℹ️ ডুপ্লিকেট (${record.index_name}), ইগনোর।`);
-            return true;
+            console.error(`❌ কনফ্লিক্ট! on_conflict কাজ করছে না (${record.index_name})`);
+            return false;
         }
-        console.error(`❌ আপসার্ট ব্যর্থ:`, err.message);
+        console.error(`❌ আপসার্ট ব্যর্থ (${table}):`, err.message);
+        if (err.response) console.error('📄 রেসপন্স:', err.response.data);
         return false;
     }
 }
 
 // ==========================================
-// 📡 DSEX ইনডেক্স স্ক্র্যাপ (হোমপেজ থেকে)
+// 📡 DSEX ইনডেক্স স্ক্র্যাপ
 // ==========================================
 async function scrapeDSEIndices() {
     const url = 'https://www.dsebd.org/';
@@ -69,8 +69,6 @@ async function scrapeDSEIndices() {
         const todayDate = new Date().toISOString().split('T')[0];
         let results = [];
 
-        // 🔍 স্ক্রিনশট অনুযায়ী: "DSEX Index", "DSES Index", "DS30 Index" আছে
-        // HTML-এ এগুলো টেবিলের ভেতরে থাকতে পারে
         $('table tr').each((index, element) => {
             const cols = $(element).find('td');
             if (cols.length >= 2) {
@@ -79,31 +77,22 @@ async function scrapeDSEIndices() {
 
                 if (label.includes('DSEX Index') || label.includes('DSEX')) {
                     const num = parseFloat(value) || 0;
-                    if (num > 0) {
-                        results.push({ name: 'DSEX', value: num });
-                    }
+                    if (num > 0) results.push({ name: 'DSEX', value: num });
                 } else if (label.includes('DSES Index') || label.includes('DSES')) {
                     const num = parseFloat(value) || 0;
-                    if (num > 0) {
-                        results.push({ name: 'DSES', value: num });
-                    }
+                    if (num > 0) results.push({ name: 'DSES', value: num });
                 } else if (label.includes('DS30 Index') || label.includes('DS30')) {
                     const num = parseFloat(value) || 0;
-                    if (num > 0) {
-                        results.push({ name: 'DS30', value: num });
-                    }
+                    if (num > 0) results.push({ name: 'DS30', value: num });
                 }
             }
         });
 
-        // 🔍 যদি টেবিলে না পাওয়া যায়, তাহলে অন্য সিলেক্টর চেষ্টা
         if (results.length === 0) {
             console.log('🔄 টেবিলে পাওয়া যায়নি, ডিভ বা স্প্যান সিলেক্টর চেষ্টা...');
-            
             $('div, span, p').each((index, element) => {
                 const text = $(element).text().trim();
                 if (text.includes('DSEX') && text.includes('Index')) {
-                    // DSEX মান বের করার চেষ্টা
                     const match = text.match(/DSEX\s*Index\s*[:.]?\s*([\d,]+\.?[\d]*)/i);
                     if (match) {
                         const num = parseFloat(match[1].replace(/,/g, ''));
@@ -133,12 +122,9 @@ async function scrapeDSEIndices() {
             });
         }
 
-        // 🔍 পরিবর্তন (Change) বের করা—পয়েন্ট ও শতকরা
-        // স্ক্রিনশটে "DSEX Index" এর পাশে "6.50 (0.11%)" এরকম থাকে
         let changeData = {};
         $('td, div, span').each((index, element) => {
             const text = $(element).text().trim();
-            // DSEX পরিবর্তন খোঁজা
             if (text.includes('DSEX') && text.includes('(') && text.includes('%)')) {
                 const match = text.match(/DSEX.*?([+-]?[\d,]+\.?[\d]*)\s*\(([+-]?[\d,]+\.?[\d]*)%\)/i);
                 if (match) {
@@ -147,8 +133,6 @@ async function scrapeDSEIndices() {
                 }
             }
         });
-
-        // যদি change না পাওয়া যায়, তাহলে শতকরা পরিবর্তন বাদে শুধু পয়েন্ট পরিবর্তন খোঁজা
         if (!changeData.point) {
             $('td, div, span').each((index, element) => {
                 const text = $(element).text().trim();
@@ -163,7 +147,6 @@ async function scrapeDSEIndices() {
 
         console.log(`📊 পাওয়া গেছে: ${results.length}টি ইনডেক্স`);
 
-        // 💾 Supabase-এ সেভ
         for (const item of results) {
             const record = {
                 index_name: item.name,
@@ -177,6 +160,8 @@ async function scrapeDSEIndices() {
             const success = await upsertToSupabase('dsex_index', record);
             if (success) {
                 console.log(`✅ DSEX: ${item.name} -> ${item.value} (Change: ${changeData.point || 0}, ${changeData.percent || 0}%)`);
+            } else {
+                console.log(`❌ DSEX: ${item.name} -> সেভ ব্যর্থ`);
             }
         }
 
@@ -191,18 +176,12 @@ async function scrapeDSEIndices() {
     }
 }
 
-// ==========================================
-// 🚀 মেইন ফাংশন
-// ==========================================
 async function startScraper() {
     console.log(`🕐 ${new Date().toISOString()} - DSEX স্ক্র্যাপ শুরু...`);
     await scrapeDSEIndices();
     console.log('✅ DSEX স্ক্র্যাপিং সম্পন্ন!');
 }
 
-// ==========================================
-// 🔥 রান
-// ==========================================
 if (require.main === module) {
     startScraper().catch(err => {
         console.error('❌ Fatal error:', err);
