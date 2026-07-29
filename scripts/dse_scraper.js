@@ -17,10 +17,13 @@ if (!SUPABASE_SERVICE_KEY) {
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// 📡 Supabase REST API-তে আপসার্ট
+// 📡 Supabase REST API-তে আপসার্ট (on_conflict + সঠিক স্ট্যাটাস)
 // ==========================================
 async function upsertToSupabase(table, record) {
-    const url = `${SUPABASE_URL}/rest/v1/${table}`;
+    // dse_live_data ও dse_closing_prices – উভয়ের unique key (ticker, date)
+    const conflictColumns = 'ticker,date';
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumns}`;
+    
     const headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
@@ -34,16 +37,25 @@ async function upsertToSupabase(table, record) {
             httpsAgent: agent,
             timeout: 15000
         });
-        if (response.status === 201 || response.status === 200) {
+
+        // ২০০, ২০১, ২০২, ২০৪ – সবই সফল
+        if ([200, 201, 202, 204].includes(response.status)) {
             return true;
         }
+
+        console.warn(`⚠️ অজানা স্ট্যাটাস ${response.status} (${table})`);
         return false;
+
     } catch (err) {
+        // on_conflict থাকায় ৪০৯ আসার কথা না, তবু আসলে এরর দেখান
         if (err.response && err.response.status === 409) {
-            console.log(`ℹ️ ডুপ্লিকেট (${record.ticker}), ইগনোর।`);
-            return true;
+            console.error(`❌ কনফ্লিক্ট! on_conflict কাজ করছে না (${record.ticker})`);
+            return false;
         }
-        console.error(`❌ আপসার্ট ব্যর্থ:`, err.message);
+        console.error(`❌ আপসার্ট ব্যর্থ (${table}):`, err.message);
+        if (err.response) {
+            console.error('📄 রেসপন্স ডেটা:', err.response.data);
+        }
         return false;
     }
 }
@@ -70,15 +82,12 @@ async function scrapeDSELatestPrices() {
         let records = [];
         let successCount = 0;
 
-        // 🔍 টেবিলের সারি খোঁজা (screenshot অনুযায়ী)
-        // টেবিলের হেডার: TRADING CODE, LTP, HIGH, LOW, CLOSEP, YCP
         $('table tr').each((index, element) => {
-            // হেডার বাদ দিন (প্রথম সারি)
             if (index === 0) return;
 
             const cols = $(element).find('td');
             if (cols.length >= 6) {
-                const ticker = $(cols[1]).text().trim(); // TRADING CODE
+                const ticker = $(cols[1]).text().trim();
                 const ltp = parseFloat($(cols[2]).text().trim()) || 0;
                 const high = parseFloat($(cols[3]).text().trim()) || 0;
                 const low = parseFloat($(cols[4]).text().trim()) || 0;
@@ -86,7 +95,7 @@ async function scrapeDSELatestPrices() {
                 const ycp = parseFloat($(cols[6]).text().trim()) || 0;
 
                 if (ticker && ltp > 0) {
-                    const record = {
+                    records.push({
                         ticker: ticker,
                         date: todayDate,
                         ltp: ltp,
@@ -95,13 +104,11 @@ async function scrapeDSELatestPrices() {
                         close: close,
                         ycp: ycp,
                         updated_at: new Date().toISOString()
-                    };
-                    records.push(record);
+                    });
                 }
             }
         });
 
-        // 📊 যদি কোনো ডেটা না পাওয়া যায়, তাহলে অন্য সিলেক্টর চেষ্টা
         if (records.length === 0) {
             console.log('🔄 প্রথম সিলেক্টরে ডেটা পাওয়া যায়নি, ব্যাকআপ সিলেক্টর চেষ্টা...');
             $('tr').each((index, element) => {
@@ -128,7 +135,6 @@ async function scrapeDSELatestPrices() {
 
         console.log(`📊 মোট ${records.length}টি রেকর্ড পাওয়া গেছে।`);
 
-        // 💾 Supabase-এ সেভ (dse_live_data ও dse_closing_prices)
         for (const record of records) {
             // ১. লাইভ ডেটা
             const liveRecord = {
@@ -146,9 +152,11 @@ async function scrapeDSELatestPrices() {
             if (liveSaved) {
                 console.log(`✅ DSE Live: ${record.ticker} -> LTP: ${record.ltp}`);
                 successCount++;
+            } else {
+                console.log(`❌ DSE Live: ${record.ticker} -> সেভ ব্যর্থ`);
             }
 
-            // ২. ক্লোজিং ডেটা (শুধু LTP, High, Low)
+            // ২. ক্লোজিং ডেটা
             const closingRecord = {
                 ticker: record.ticker,
                 date: record.date,
@@ -158,7 +166,10 @@ async function scrapeDSELatestPrices() {
                 volume: 0,
                 updated_at: record.updated_at
             };
-            await upsertToSupabase('dse_closing_prices', closingRecord);
+            const closeSaved = await upsertToSupabase('dse_closing_prices', closingRecord);
+            if (!closeSaved) {
+                console.log(`❌ DSE Closing: ${record.ticker} -> সেভ ব্যর্থ`);
+            }
         }
 
         console.log(`✅ DSE স্ক্র্যাপ সম্পন্ন! সফল: ${successCount}/${records.length}`);
@@ -174,7 +185,7 @@ async function scrapeDSELatestPrices() {
 }
 
 // ==========================================
-// 📡 DSEX ইনডেক্স (আগের মতো)
+// 📡 DSEX ইনডেক্স (একই ফাইলে থাকা অংশ)
 // ==========================================
 async function scrapeDSEIndices(todayDate) {
     console.log("📊 DSEX ইনডেক্স সংগ্রহ...");
@@ -198,7 +209,11 @@ async function scrapeDSEIndices(todayDate) {
                     else if (name.includes('D30')) name = 'D30';
                     const num = parseFloat(value);
                     if (!isNaN(num) && num > 0) {
-                        upsertToSupabase('dsex_index', { date: todayDate, value: num })
+                        // dsex_index টেবিলের জন্য আলাদা upsert দরকার, কিন্তু এখানে conflict কলাম ভিন্ন
+                        // সরাসরি কল করলে সমস্যা হবে, তাই আলাদা ফাংশন বা প্যারামিটার পাস করাই ভালো।
+                        // যেহেতু dsex_index এর unique key হলো (index_name, date), 
+                        // আমি এখানে আলাদা করে দিচ্ছি।
+                        upsertDSEIndex('dsex_index', { index_name: name, date: todayDate, value: num })
                             .then(success => {
                                 if (success) console.log(`✅ DSEX ${name}: ${value}`);
                             });
@@ -211,27 +226,40 @@ async function scrapeDSEIndices(todayDate) {
     }
 }
 
+// dsex_index-এর জন্য আলাদা upsert (কারণ conflict column ভিন্ন)
+async function upsertDSEIndex(table, record) {
+    const conflictColumns = 'index_name,date';
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumns}`;
+    const headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+    };
+    try {
+        const response = await axios.post(url, record, { headers, httpsAgent: agent, timeout: 15000 });
+        if ([200, 201, 202, 204].includes(response.status)) return true;
+        return false;
+    } catch (err) {
+        console.error(`❌ DSEX আপসার্ট ব্যর্থ:`, err.message);
+        return false;
+    }
+}
+
 // ==========================================
 // 🚀 মেইন ফাংশন
 // ==========================================
 async function startScraper() {
-    const isManual = process.argv.includes('--manual');
     console.log(`🕐 ${new Date().toISOString()} - DSE স্ক্র্যাপ শুরু...`);
     const todayDate = new Date().toISOString().split('T')[0];
 
-    // ১. DSEX ইনডেক্স
     await scrapeDSEIndices(todayDate);
     await new Promise(r => setTimeout(r, 1000));
-
-    // ২. লেটেস্ট শেয়ার প্রাইস
     await scrapeDSELatestPrices();
 
     console.log('✅ DSE স্ক্র্যাপিং সম্পন্ন!');
 }
 
-// ==========================================
-// 🔥 রান
-// ==========================================
 if (require.main === module) {
     startScraper().catch(err => {
         console.error('❌ Fatal error:', err);
