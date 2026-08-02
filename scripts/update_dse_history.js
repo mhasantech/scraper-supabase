@@ -25,9 +25,11 @@ function getBangladeshTime() {
 }
 
 // ==========================================
-// 📡 Supabase আপসার্ট (history_dse)
+// 📡 ব্যাচ আপসার্ট – এক টিকার সব রেকর্ড একসাথে
 // ==========================================
-async function upsertToSupabase(record) {
+async function batchUpsert(ticker, records) {
+    if (records.length === 0) return 0;
+
     const table = 'history_dse';
     const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=ticker,date`;
     const headers = {
@@ -38,24 +40,101 @@ async function upsertToSupabase(record) {
     };
 
     try {
-        const response = await axios.post(url, record, {
+        const response = await axios.post(url, records, {
             headers,
             httpsAgent: agent,
-            timeout: 15000
+            timeout: 30000
         });
         if ([200, 201, 202, 204].includes(response.status)) {
-            return true;
+            return records.length;
         }
-        return false;
+        return 0;
     } catch (err) {
-        console.error(`❌ আপসার্ট ব্যর্থ (${record.ticker}):`, err.message);
+        console.error(`❌ ব্যাচ আপসার্ট ব্যর্থ (${ticker}):`, err.message);
         if (err.response) console.error('📄 রেসপন্স:', err.response.data);
-        return false;
+        return 0;
     }
 }
 
 // ==========================================
-// 📡 শেষ তারিখ খুঁজে বের করা (history_dse থেকে)
+// 📡 API থেকে এক টিকার ডেটা আনা
+// ==========================================
+async function fetchTickerData(ticker, startDate, endDate) {
+    const API_BASE_URL = 'https://bd-stock-api-an3n.vercel.app/v1/dse/historical';
+    const url = `${API_BASE_URL}?start=${startDate}&end=${endDate}&code=${ticker}`;
+
+    try {
+        const response = await axios.get(url, { timeout: 30000 });
+        if (!response.data?.success || !response.data?.data) {
+            return [];
+        }
+
+        const historicalData = response.data.data;
+        if (historicalData.length === 0) return [];
+
+        return historicalData.map(item => ({
+            ticker: item['TRADING CODE'] || ticker,
+            date: item['DATE'],
+            ltp: parseFloat(item['LTP*']) || 0,
+            high: parseFloat(item['HIGH']) || 0,
+            low: parseFloat(item['LOW']) || 0,
+            open: parseFloat(item['OPENP*']) || 0,
+            ycp: parseFloat(item['YCP']) || 0,
+            volume: parseInt(item['VOLUME']) || 0,
+            trade: parseInt(item['TRADE']) || 0,
+            value_mn: parseFloat(item['VALUE (mn)']) || 0,
+            updated_at: getBangladeshTime()
+        }));
+
+    } catch (err) {
+        console.error(`❌ ${ticker} -> API কল ব্যর্থ:`, err.message);
+        return [];
+    }
+}
+
+// ==========================================
+// 🔍 ফিল্টার: শুধু শেয়ার (Equity) বাছাই করা
+// ==========================================
+function isEquity(ticker) {
+    if (!ticker) return false;
+    const upper = ticker.toUpperCase();
+    // মিউচুয়াল ফান্ড (MF), বন্ড (BOND), ট্রেজারি বিল (T-BILL), হাইফেন (-) বাদ
+    if (upper.includes('MF') || upper.includes('BOND') || upper.includes('T-BILL') || upper.includes('-')) {
+        return false;
+    }
+    return true;
+}
+
+// ==========================================
+// 📋 সব DSE টিকার তালিকা (Supabase থেকে) + ফিল্টার
+// ==========================================
+async function getDSETickers() {
+    let tickers = [];
+    try {
+        const url = `${SUPABASE_URL}/rest/v1/dse_live_data?select=ticker`;
+        const headers = {
+            'apikey': SUPABASE_SERVICE_KEY,
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`
+        };
+        const res = await axios.get(url, { headers, httpsAgent: agent, timeout: 10000 });
+        if (res.data && res.data.length > 0) {
+            const all = res.data.map(row => row.ticker).filter(Boolean);
+            // 🔥 ফিল্টার প্রয়োগ
+            tickers = all.filter(t => isEquity(t));
+            console.log(`📊 DSE: মোট ${all.length}টি সিকিউরিটি থেকে ${tickers.length}টি শেয়ার বাছাই করা হয়েছে।`);
+            return tickers;
+        }
+    } catch (e) {
+        console.warn('⚠️ Supabase থেকে তালিকা পড়া যায়নি, ব্যাকআপ ব্যবহার করছি...');
+    }
+
+    // 🔥 ব্যাকআপ তালিকা (শুধু শেয়ার)
+    const backup = ["UTTARABANK", "BDTHAI", "ACI", "BEXIMCO", "BATBC", "GP", "LHBL", "SQURPHARMA"];
+    return backup.filter(t => isEquity(t));
+}
+
+// ==========================================
+// 📅 সর্বশেষ তারিখ খুঁজে বের করা
 // ==========================================
 async function getLastDate() {
     try {
@@ -77,79 +156,10 @@ async function getLastDate() {
 }
 
 // ==========================================
-// 📡 API থেকে হিস্টোরিক্যাল ডেটা আনা
-// ==========================================
-async function fetchDSEHistorical(ticker, startDate, endDate) {
-    const API_BASE_URL = 'https://bd-stock-api-an3n.vercel.app/v1/dse/historical';
-    const url = `${API_BASE_URL}?start=${startDate}&end=${endDate}&code=${ticker}`;
-
-    try {
-        console.log(`📡 ${ticker} -> ${startDate} থেকে ${endDate} পর্যন্ত আনা হচ্ছে...`);
-        const response = await axios.get(url, { timeout: 30000 });
-
-        if (!response.data?.success || !response.data?.data) {
-            console.log(`⚠️ ${ticker} -> ডেটা পাওয়া যায়নি।`);
-            return [];
-        }
-
-        const historicalData = response.data.data;
-        if (historicalData.length === 0) {
-            console.log(`⚠️ ${ticker} -> কোনো রেকর্ড নেই।`);
-            return [];
-        }
-
-        // history_dse টেবিলের জন্য সব ফিল্ড ম্যাপিং
-        const records = historicalData.map(item => ({
-            ticker: item['TRADING CODE'] || ticker,
-            date: item['DATE'],
-            ltp: parseFloat(item['LTP*']) || 0,
-            high: parseFloat(item['HIGH']) || 0,
-            low: parseFloat(item['LOW']) || 0,
-            open: parseFloat(item['OPENP*']) || 0,
-            ycp: parseFloat(item['YCP']) || 0,
-            volume: parseInt(item['VOLUME']) || 0,
-            trade: parseInt(item['TRADE']) || 0,
-            value_mn: parseFloat(item['VALUE (mn)']) || 0,
-            updated_at: getBangladeshTime()
-        }));
-
-        console.log(`✅ ${ticker} -> ${records.length}টি রেকর্ড পাওয়া গেছে।`);
-        return records;
-
-    } catch (err) {
-        console.error(`❌ ${ticker} -> API কল ব্যর্থ:`, err.message);
-        return [];
-    }
-}
-
-// ==========================================
-// 📋 সব DSE টিকার তালিকা (Supabase থেকে)
-// ==========================================
-async function getDSETickers() {
-    try {
-        const url = `${SUPABASE_URL}/rest/v1/dse_live_data?select=ticker`;
-        const headers = {
-            'apikey': SUPABASE_SERVICE_KEY,
-            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`
-        };
-        const res = await axios.get(url, { headers, httpsAgent: agent, timeout: 10000 });
-        if (res.data && res.data.length > 0) {
-            const tickers = res.data.map(row => row.ticker).filter(Boolean);
-            console.log(`📊 DSE: ${tickers.length}টি টিকার পাওয়া গেছে (Supabase থেকে)`);
-            return tickers;
-        }
-    } catch (e) {
-        console.warn('⚠️ Supabase থেকে DSE তালিকা পড়া যায়নি, ব্যাকআপ ব্যবহার করছি...');
-    }
-    // ব্যাকআপ তালিকা
-    return ["UTTARABANK", "BDTHAI", "ACI", "BEXIMCO", "BATBC", "GP", "LHBL", "SQURPHARMA"];
-}
-
-// ==========================================
-// 🚀 মেইন ফাংশন – স্মার্ট আপডেট
+// 🚀 মেইন ফাংশন
 // ==========================================
 async function updateDSEHistory() {
-    console.log(`🕐 ${getBangladeshTime()} - DSE হিস্টোরি আপডেট শুরু...`);
+    console.log(`🕐 ${getBangladeshTime()} - DSE হিস্টোরি আপডেট শুরু... (শুধু শেয়ার)`);
 
     const today = new Date().toISOString().split('T')[0];
     const lastDate = await getLastDate();
@@ -158,14 +168,12 @@ async function updateDSEHistory() {
     let isFullHistory = false;
 
     if (!lastDate) {
-        // 🔥 প্রথমবার: গত ২ বছরের ডেটা আনবে
         const twoYearsAgo = new Date();
         twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
         startDate = twoYearsAgo.toISOString().split('T')[0];
         isFullHistory = true;
         console.log(`🆕 টেবিল খালি। গত ২ বছরের ডেটা আনা হবে (${startDate} থেকে)`);
     } else {
-        // 🔄 পরবর্তী রান: শেষ তারিখের পরের দিন থেকে আজ পর্যন্ত
         const nextDay = new Date(lastDate);
         nextDay.setDate(nextDay.getDate() + 1);
         startDate = nextDay.toISOString().split('T')[0];
@@ -178,32 +186,37 @@ async function updateDSEHistory() {
     }
 
     const tickers = await getDSETickers();
-    console.log(`📊 মোট ${tickers.length}টি টিকার ডেটা আনা হবে।`);
+    console.log(`📊 মোট ${tickers.length}টি শেয়ারের ডেটা আনা হবে।`);
 
+    const concurrency = 5;
     let totalRecords = 0;
     let successCount = 0;
-    const chunkSize = 3;
 
-    for (let i = 0; i < tickers.length; i += chunkSize) {
-        const chunk = tickers.slice(i, i + chunkSize);
-        console.log(`📡 প্রসেসিং ${i+1}-${Math.min(i+chunkSize, tickers.length)}/${tickers.length}`);
+    for (let i = 0; i < tickers.length; i += concurrency) {
+        const chunk = tickers.slice(i, i + concurrency);
+        console.log(`📡 প্রসেসিং ব্যাচ ${Math.floor(i/concurrency) + 1}/${Math.ceil(tickers.length/concurrency)} (${i+1}-${Math.min(i+concurrency, tickers.length)})`);
 
-        for (const ticker of chunk) {
-            const records = await fetchDSEHistorical(ticker, startDate, today);
-            if (records.length === 0) continue;
+        const fetchPromises = chunk.map(ticker => fetchTickerData(ticker, startDate, today));
+        const results = await Promise.all(fetchPromises);
 
-            let saved = 0;
-            for (const record of records) {
-                const success = await upsertToSupabase(record);
-                if (success) saved++;
-            }
+        const upsertPromises = chunk.map((ticker, index) => {
+            const records = results[index];
+            if (records.length === 0) return Promise.resolve(0);
+            return batchUpsert(ticker, records);
+        });
+
+        const savedCounts = await Promise.all(upsertPromises);
+
+        for (let j = 0; j < chunk.length; j++) {
+            const ticker = chunk[j];
+            const records = results[j];
+            const saved = savedCounts[j];
             totalRecords += records.length;
             successCount += saved;
             console.log(`${ticker}: ${saved}/${records.length} সেভ হয়েছে`);
-
-            await new Promise(r => setTimeout(r, 500));
         }
-        await new Promise(r => setTimeout(r, 2000));
+
+        await new Promise(r => setTimeout(r, 1000));
     }
 
     console.log(`✅ DSE হিস্টোরি আপডেট সম্পন্ন!`);
