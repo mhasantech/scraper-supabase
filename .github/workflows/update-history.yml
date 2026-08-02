@@ -1,0 +1,35 @@
+name: Update DSE History (Daily)
+
+on:
+  schedule:
+    # UTC ১০:৩০ = বাংলাদেশ ৪:৩০ PM (রবি-বৃহস্পতি)
+    - cron: '30 10 * * 0-4'
+  workflow_dispatch:
+    # ম্যানুয়ালি রান করাতে চাইলে
+
+jobs:
+  update-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run DSE History Updater
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/update_dse_history.js
+
+      - name: Completion Message
+        run: echo "✅ DSE হিস্টোরি আপডেট সম্পন্ন!"
