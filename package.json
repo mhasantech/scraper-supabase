@@ -9,7 +9,7 @@
     "daily-closing": "node scripts/update_daily_closing.js",
     "migrate": "node scripts/migrate_firebase_to_supabase.js",
     "historical": "node scripts/update_historical_closing.js"
-  }
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "axios": "^1.6.0",
