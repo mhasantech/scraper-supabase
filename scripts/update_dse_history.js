@@ -25,6 +25,45 @@ function getBangladeshTime() {
 }
 
 // ==========================================
+// 📋 আপনার নির্দিষ্ট টিকার তালিকা
+// ==========================================
+const TICKERS = [
+    "1JANATAMF", "1STPRIMFMF", "AAMRANET", "AAMRATECH", "ABB1STMF", "ABBANK", "ACFL", "ACI", "ACIFORMULA", "ACMELAB",
+    "ACTIVEFINE", "ADNTEL", "ADVENT", "AFCAGRO", "AFTABAUTO", "AGNISYSL", "AGRANINS", "AIBL1STIMF", "AIL", "AL-HAJTEX",
+    "ALARABANK", "ALIF", "ALLTEX", "AMANFEED", "AMBEEPHA", "ANLIMAYARN", "ANWARGALV", "APEXFOODS", "APEXFOOT", "APEXSPINN",
+    "APOLOISPAT", "ARAMIT", "ARAMITCEM", "ARGONDENIM", "ASIAPACINS", "ATCSLGF", "ATLASBANG", "AZIZPIPES", "BANGAS", "BANKASIA",
+    "BATASHOE", "BATBC", "BAYLEASING", "BBS", "BCC", "BDCOM", "BDFINANCE", "BDLAMPS", "BDTHAI", "BDTHAIFOOD",
+    "BDWELDING", "BEACHHATCH", "BEACONPHAR", "BENGALWTL", "BERGERPBL", "BEXGSUKUK", "BEXIMCO", "BGIC", "BIFC", "BNICL",
+    "BPML", "BPPL", "BRACBANK", "BSC", "BSCCL", "BSRMLTD", "BSRMSTEEL", "BXPHARMA", "CAPMBDBLMF", "CAPMIBBLMF", "BESTHLDNG",
+    "CENTRALINS", "CENTRALPHL", "CITYBANK", "CNATEX", "CONFIDCEM", "CONTININS", "COPPERTECH", "CROWNCEMNT", "CVOPRL", "DACCADYE",
+    "DAFODILCOM", "DBH", "DBH1STMF", "DELTALIFE", "DELTASPINN", "DESCO", "DESHBANDHU", "DHAKABANK", "DOMINAGE", "DOREENPWR",
+    "DSSL", "Dulamiacot", "DUTCHBANGL", "EASTLAND", "EASTRNLUB", "EBL", "EBL1STMF", "EBLNRBMF", "ECABLES", "EGEN",
+    "EMERALDOIL", "ENVOYTEX", "EPGL", "ESQUIRENIT", "ETL", "EXIM1STMF", "EXIMBANK", "FAMILYTEX", "FARCHEM", "FAREASTLIF", "FAREASTFIN",
+    "FASFIN", "FBFIF", "FEDERALINS", "FEKDIL", "FINEFOODS", "FIRSTFIN", "FIRSTSBANK", "FORTUNE", "FUWANGCER",
+    "FUWANGFOOD", "GBBPOWER", "GEMINISEA", "GENEXIL", "GENNEXT", "GHAIL", "GHCL", "GIB", "GLAXOSMITH", "GLOBALINS",
+    "GOLDENSON", "GP", "GPHISPAT", "GQBALLPEN", "GSPFINANCE", "GRAMEENS2", "GREENDELT", "HAKKANIPUL", "HEIDELBCEM", "HFL", "HRTEX",
+    "HWAWELLTEX", "IBNSINA", "IBP", "ICB", "ICB3RDNRB", "ICBAGRANI1", "ICBAMCL2ND", "ICBEPMF1S1", "IDLC", "IFADAUTOS", "ICICL",
+    "IFIC", "IFIC1STMF", "IFILISLMF1", "ILFSL", "INDEXAGRO", "INTECH", "INTRACO", "IPDC", "ISLAMIBANK", "ISLAMICFIN", "ICBEPMF1S1",
+    "ISNLTD", "ITC", "JAMUNABANK", "JAMUNAOIL", "JANATAINS", "JHRML", "JMISMDL", "JUTESPINN", "KARNAPHULI", "KAY&QUE",
+    "KBPPWBIL", "KDSALTD", "KEYACOSMET", "KPCL", "KPPL", "LANKABAFIN", "LEGACYFOOT", "LHBL", "LIBRAINFU", "LINDEBD",
+    "LOVELLO", "LRBDL", "MARICO", "MATINSPINN", "MBL1STMF", "MEGCONMILK", "MEGHNACEM", "MEGHNALIFE", "MEGHNAPET", "MERCANBANK",
+    "MERCINS", "METROSPIN", "MHSML", "MIDASFIN", "MIRACLEIND", "MIRAKHTER", "MONNOAGML", "MONNOCERA", "MONNOFABR", "MONOSPOOL", "MALEKSPIN", "MPETROLEUM", "MTB", "MIDLANDBNK", "NAHEEACP", "NATLIFEINS", "NAVANACNG", "NAVANAPHAR", "NBL", "NCCBANK", "NCCBLMF1", "NEWLINE",
+    "NITOLINS", "NORTHERN", "NORTHRNINS", "NPOLYMER", "NRBBANK", "NTLTUBES", "OAL", "NHFIL", "OIMEX", "OLYMPIC", "ONEBANKPLC",
+    "ORIONINFU", "ORIONPHARM", "PADMALIFE", "PADMAOIL", "PARAMOUNT", "PDL", "PENINSULA", "PEOPLESINS", "PF1STMF", "PHARMAID",
+    "PHENIXINS", "PHOENIXFIN", "PIONEERINS", "PLFSL", "POPULAR1MF", "POPULARLIF", "POWERGRID", "PRAGATIINS", "PRAGATILIF", "PREMIERBAN",
+    "PREMIERCEM", "PREMIERLEA", "PRIME1ICBA", "PRIMEBANK", "PRIMEFIN", "PRIMEINSUR", "PRIMELIFE", "PROGRESLIF", "PROVATIINS", "PTL",
+    "PUBALIBANK", "PURABIGEN", "QUASEMIND", "QUEENSOUTH", "RAHIMAFOOD", "RAKCERAMIC", "RANFOUNDRY", "RDFOOD", "RECKITTBEN", "REGENTTEX",
+    "RELIANCE1", "RENATA", "REPUBLIC", "RINGSHINE", "ROBI", "RSRMSTEEL", "RUNNERAUTO", "RUPALIBANK", "RUPALIINS", "SAFKOSPINN",
+    "SAIFPOWER", "SAIHAMCOT", "SAIHAMTEX", "SALAMCRST", "SALVOCHEM", "SAMATALETH", "SAMORITA", "SANDHANINS", "SAPORTL", "SAVAREFR",
+    "SEAPEARL", "SEMLFBSLGF", "SEMLIBBLSF", "SEMLLECMF", "SHAHJABANK", "SHASHADNIM", "SHEPHERD", "SHURWID", "SHYAMPSUG", "SIBL",
+    "SICL", "SILCOPHL", "SILVAPHL", "SIMTEX", "SINOBANGLA", "SKICL", "SONALIANSH", "SONALILIFE", "SONALIPAPR", "SONARBAINS",
+    "SOUTHEASTB", "SPCERAMICS", "SQURPHARMA", "SSSTEEL", "STANCERAM", "STANDARINS", "STANDBANKL", "STYLECRAFT", "SUMITPOWER", "SUNLIFEINS",
+    "TAKAFULINS", "TALLUSPIN", "TAMIJTEX", "TECHNODRUG", "TILIL", "TITASGAS", "TOSRIFA", "TRUSTBANK", "TUNGHAI", "UCB",
+    "UNILEVERCL", "UNIONBANK", "UNIONCAP", "UNIONINS", "UNIQUEHRL", "UNITEDFIN", "UNITEDINS", "UPGDCL", "USMANIAGL", "UTTARABANK",
+    "UTTARAFIN", "VAMLBDMF1", "VAMLRBBF", "VFSTDL", "WALTONHIL", "WATACHEM", "WMSHIPYARD", "YPL", "ZAHEENSPIN", "ZAHINTEX"
+];
+
+// ==========================================
 // 📡 ব্যাচ আপসার্ট – এক টিকার সব রেকর্ড একসাথে
 // ==========================================
 async function batchUpsert(ticker, records) {
@@ -93,48 +132,7 @@ async function fetchTickerData(ticker, startDate, endDate) {
 }
 
 // ==========================================
-// 🔍 ফিল্টার: শুধু শেয়ার (Equity) বাছাই করা
-// ==========================================
-function isEquity(ticker) {
-    if (!ticker) return false;
-    const upper = ticker.toUpperCase();
-    // মিউচুয়াল ফান্ড (MF), বন্ড (BOND), ট্রেজারি বিল (T-BILL), হাইফেন (-) বাদ
-    if (upper.includes('MF') || upper.includes('BOND') || upper.includes('T-BILL') || upper.includes('-')) {
-        return false;
-    }
-    return true;
-}
-
-// ==========================================
-// 📋 সব DSE টিকার তালিকা (Supabase থেকে) + ফিল্টার
-// ==========================================
-async function getDSETickers() {
-    let tickers = [];
-    try {
-        const url = `${SUPABASE_URL}/rest/v1/dse_live_data?select=ticker`;
-        const headers = {
-            'apikey': SUPABASE_SERVICE_KEY,
-            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`
-        };
-        const res = await axios.get(url, { headers, httpsAgent: agent, timeout: 10000 });
-        if (res.data && res.data.length > 0) {
-            const all = res.data.map(row => row.ticker).filter(Boolean);
-            // 🔥 ফিল্টার প্রয়োগ
-            tickers = all.filter(t => isEquity(t));
-            console.log(`📊 DSE: মোট ${all.length}টি সিকিউরিটি থেকে ${tickers.length}টি শেয়ার বাছাই করা হয়েছে।`);
-            return tickers;
-        }
-    } catch (e) {
-        console.warn('⚠️ Supabase থেকে তালিকা পড়া যায়নি, ব্যাকআপ ব্যবহার করছি...');
-    }
-
-    // 🔥 ব্যাকআপ তালিকা (শুধু শেয়ার)
-    const backup = ["UTTARABANK", "BDTHAI", "ACI", "BEXIMCO", "BATBC", "GP", "LHBL", "SQURPHARMA"];
-    return backup.filter(t => isEquity(t));
-}
-
-// ==========================================
-// 📅 সর্বশেষ তারিখ খুঁজে বের করা
+// 📅 সর্বশেষ তারিখ খুঁজে বের করা (history_dse থেকে)
 // ==========================================
 async function getLastDate() {
     try {
@@ -156,10 +154,11 @@ async function getLastDate() {
 }
 
 // ==========================================
-// 🚀 মেইন ফাংশন
+// 🚀 মেইন ফাংশন – ইনক্রিমেন্টাল আপডেট
 // ==========================================
 async function updateDSEHistory() {
-    console.log(`🕐 ${getBangladeshTime()} - DSE হিস্টোরি আপডেট শুরু... (শুধু শেয়ার)`);
+    console.log(`🕐 ${getBangladeshTime()} - DSE হিস্টোরি আপডেট শুরু... (শুধু আপনার তালিকা)`);
+    console.log(`📊 মোট ${TICKERS.length}টি টিকার ডেটা আনা হবে।`);
 
     const today = new Date().toISOString().split('T')[0];
     const lastDate = await getLastDate();
@@ -168,12 +167,14 @@ async function updateDSEHistory() {
     let isFullHistory = false;
 
     if (!lastDate) {
+        // প্রথমবার: গত ২ বছর
         const twoYearsAgo = new Date();
         twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
         startDate = twoYearsAgo.toISOString().split('T')[0];
         isFullHistory = true;
         console.log(`🆕 টেবিল খালি। গত ২ বছরের ডেটা আনা হবে (${startDate} থেকে)`);
     } else {
+        // পরবর্তী রান: শেষ তারিখের পরের দিন থেকে আজ
         const nextDay = new Date(lastDate);
         nextDay.setDate(nextDay.getDate() + 1);
         startDate = nextDay.toISOString().split('T')[0];
@@ -185,20 +186,20 @@ async function updateDSEHistory() {
         console.log(`🔄 নতুন ডেটা আনা হবে (${startDate} থেকে ${today} পর্যন্ত)`);
     }
 
-    const tickers = await getDSETickers();
-    console.log(`📊 মোট ${tickers.length}টি শেয়ারের ডেটা আনা হবে।`);
-
+    // 🔥 কনকারেন্টি কন্ট্রোল – একসাথে ৫ টিকা
     const concurrency = 5;
     let totalRecords = 0;
     let successCount = 0;
 
-    for (let i = 0; i < tickers.length; i += concurrency) {
-        const chunk = tickers.slice(i, i + concurrency);
-        console.log(`📡 প্রসেসিং ব্যাচ ${Math.floor(i/concurrency) + 1}/${Math.ceil(tickers.length/concurrency)} (${i+1}-${Math.min(i+concurrency, tickers.length)})`);
+    for (let i = 0; i < TICKERS.length; i += concurrency) {
+        const chunk = TICKERS.slice(i, i + concurrency);
+        console.log(`📡 প্রসেসিং ব্যাচ ${Math.floor(i/concurrency) + 1}/${Math.ceil(TICKERS.length/concurrency)} (${i+1}-${Math.min(i+concurrency, TICKERS.length)})`);
 
+        // প্যারালালে সব টিকার ডেটা আনা
         const fetchPromises = chunk.map(ticker => fetchTickerData(ticker, startDate, today));
         const results = await Promise.all(fetchPromises);
 
+        // প্রতিটি টিকার ডেটা ব্যাচ আপসার্ট
         const upsertPromises = chunk.map((ticker, index) => {
             const records = results[index];
             if (records.length === 0) return Promise.resolve(0);
@@ -207,6 +208,7 @@ async function updateDSEHistory() {
 
         const savedCounts = await Promise.all(upsertPromises);
 
+        // সারাংশ
         for (let j = 0; j < chunk.length; j++) {
             const ticker = chunk[j];
             const records = results[j];
@@ -216,6 +218,7 @@ async function updateDSEHistory() {
             console.log(`${ticker}: ${saved}/${records.length} সেভ হয়েছে`);
         }
 
+        // রেট-লিমিট এড়াতে বিরতি
         await new Promise(r => setTimeout(r, 1000));
     }
 
