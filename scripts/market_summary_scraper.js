@@ -1,264 +1,451 @@
-// scripts/market_summary_scraper.js
-// StockPulse - DSE Market Summary scraper
-//
-// Collects the public DSE market snapshot and stores the latest snapshots
-// in Supabase. The StockPulse frontend can read the table through the
-// normal Supabase REST API; no separate public scraper API is required.
+/**
+ * DSE Market Summary Scraper
+ *
+ * IMPORTANT:
+ * - Existing scrapers are NOT modified.
+ * - This is a standalone new scraper.
+ *
+ * Required environment variables:
+ *   SUPABASE_URL
+ *   SUPABASE_SERVICE_KEY
+ */
 
-const axios = require('axios');
-const cheerio = require('cheerio');
-const https = require('https');
+const axios = require("axios");
+const cheerio = require("cheerio");
 
-const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
+const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-if (!SUPABASE_SERVICE_KEY) {
-  console.error('❌ SUPABASE_SERVICE_KEY পাওয়া যায়নি।');
-  process.exit(1);
+const DSE_URL = "https://www.dsebd.org/";
+
+if (!SUPABASE_URL) {
+  throw new Error("❌ SUPABASE_URL environment variable is missing");
 }
 
-// Kept consistent with the existing scraper project.
-const agent = new https.Agent({ rejectUnauthorized: false });
+if (!SUPABASE_SERVICE_KEY) {
+  throw new Error("❌ SUPABASE_SERVICE_KEY environment variable is missing");
+}
 
-const DSE_URL = 'https://www.dsebd.org/';
-const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// --------------------------------------------------
+// Helpers
+// --------------------------------------------------
 
 function cleanText(value) {
-  return String(value || '')
-    .replace(/\u00a0/g, ' ')
-    .replace(/\s+/g, ' ')
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
-function parseNumber(value) {
+function numberFromText(value) {
   if (value === null || value === undefined) return null;
-  const s = cleanText(value).replace(/,/g, '').replace(/৳/g, '');
-  const match = s.match(/[-+]?\d+(?:\.\d+)?/);
-  return match ? Number(match[0]) : null;
+
+  const text = String(value)
+    .replace(/,/g, "")
+    .replace(/%/g, "")
+    .trim();
+
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+
+  if (!match) return null;
+
+  const number = Number(match[0]);
+
+  return Number.isFinite(number) ? number : null;
 }
 
-function normalizeKey(value) {
+function normalizeLabel(value) {
   return cleanText(value)
     .toLowerCase()
-    .replace(/[:\-–—]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/[:：]/g, "")
+    .replace(/\s+/g, " ");
 }
 
-/**
- * Find a numeric value in a row containing a known label.
- * This is intentionally tolerant because DSE page markup can change.
- */
-function findRowValue($, labels) {
-  let result = null;
+function isValidDsex(value) {
+  return (
+    value !== null &&
+    Number.isFinite(value) &&
+    value >= 1000 &&
+    value <= 10000
+  );
+}
 
-  $('tr').each((_, tr) => {
-    if (result !== null) return;
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
 
-    const cells = $(tr).find('th,td').map((i, el) => cleanText($(el).text())).get();
-    if (!cells.length) return;
+// --------------------------------------------------
+// Scrape DSE
+// --------------------------------------------------
 
-    const rowText = normalizeKey(cells.join(' '));
+async function scrapeDSE() {
+  console.log(`📡 Scraping: ${DSE_URL}`);
 
-    for (const label of labels) {
-      if (rowText.includes(normalizeKey(label))) {
-        // Prefer a cell that is not the label itself.
-        for (let i = cells.length - 1; i >= 0; i--) {
-          const n = parseNumber(cells[i]);
-          if (n !== null && !normalizeKey(cells[i]).includes(normalizeKey(label))) {
-            result = n;
-            return;
+  const response = await axios.get(DSE_URL, {
+    timeout: 30000,
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    },
+  });
+
+  const $ = cheerio.load(response.data);
+
+  const rows = [];
+
+  $("tr").each((_, tr) => {
+    const cells = [];
+
+    $(tr)
+      .find("th, td")
+      .each((_, cell) => {
+        const text = cleanText($(cell).text());
+
+        if (text) {
+          cells.push(text);
+        }
+      });
+
+    if (cells.length > 0) {
+      rows.push(cells);
+    }
+  });
+
+  console.log(`📊 Found ${rows.length} table rows`);
+
+  return rows;
+}
+
+// --------------------------------------------------
+// Find values safely
+// --------------------------------------------------
+
+function findValue(rows, labels) {
+  const normalizedLabels = labels.map(normalizeLabel);
+
+  for (const row of rows) {
+    const normalizedRow = row.map(normalizeLabel);
+
+    for (let i = 0; i < normalizedRow.length; i++) {
+      if (!normalizedLabels.includes(normalizedRow[i])) continue;
+
+      // Prefer value immediately after the label
+      if (row[i + 1]) {
+        const value = numberFromText(row[i + 1]);
+
+        if (value !== null) {
+          return value;
+        }
+      }
+
+      // Sometimes label/value are combined in one cell
+      const combined = row[i];
+
+      for (const label of labels) {
+        const regex = new RegExp(
+          label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+            "\\s*[:\\-]?\\s*(-?\\d[\\d,.]*)",
+          "i"
+        );
+
+        const match = combined.match(regex);
+
+        if (match) {
+          const value = numberFromText(match[1]);
+
+          if (value !== null) {
+            return value;
           }
         }
       }
     }
-  });
-
-  return result;
-}
-
-/**
- * Search the complete page text for a label followed reasonably closely
- * by a number. Used as a fallback if the table structure changes.
- */
-function findTextValue(pageText, labels) {
-  const text = cleanText(pageText);
-
-  for (const label of labels) {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(
-      `${escaped}\\s*[:\\-]?\\s*([+-]?\\d[\\d,]*(?:\\.\\d+)?)`,
-      'i'
-    );
-    const match = text.match(re);
-    if (match) return parseNumber(match[1]);
   }
 
   return null;
 }
 
-function firstNonNull(...values) {
-  return values.find(v => v !== null && v !== undefined);
+// --------------------------------------------------
+// Find DSEX specifically
+// --------------------------------------------------
+
+function findDSEX(rows) {
+  const candidates = [];
+
+  for (const row of rows) {
+    const rowText = row.join(" ");
+
+    if (!/\bDSEX\b/i.test(rowText)) {
+      continue;
+    }
+
+    for (const cell of row) {
+      const value = numberFromText(cell);
+
+      if (isValidDsex(value)) {
+        candidates.push(value);
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  // DSEX normally appears as a 4-digit value.
+  // Prefer the first valid explicit DSEX value.
+  return candidates[0];
 }
 
-async function fetchDsePage() {
-  console.log(`📡 স্ক্র্যাপিং: ${DSE_URL}`);
+// --------------------------------------------------
+// Build market summary
+// --------------------------------------------------
 
-  const response = await axios.get(DSE_URL, {
-    httpsAgent: agent,
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9'
-    },
-    timeout: 25000
-  });
+function buildMarketSummary(rows) {
+  const dsex = findDSEX(rows);
+
+  let previousClose = findValue(rows, [
+    "Previous Close",
+    "Previous close",
+    "Prev. Close",
+    "Prev Close",
+  ]);
+
+  let change = findValue(rows, [
+    "Change",
+    "DSEX Change",
+    "Index Change",
+    "Change (Point)",
+  ]);
+
+  let changePercent = findValue(rows, [
+    "Change %",
+    "Change%",
+    "Change Percent",
+    "% Change",
+    "Percentage Change",
+  ]);
+
+  const totalTrades = findValue(rows, [
+    "Total Trades",
+    "Total Trade",
+    "Trades",
+    "Trade",
+  ]);
+
+  const totalVolume = findValue(rows, [
+    "Total Volume",
+    "Volume",
+    "Total Volume (mn)",
+  ]);
+
+  const totalValue = findValue(rows, [
+    "Total Value",
+    "Value",
+    "Total Value (mn)",
+    "Turnover",
+  ]);
+
+  const advanced = findValue(rows, [
+    "Advanced",
+    "Advancing",
+    "Advance",
+    "Gainers",
+  ]);
+
+  const declined = findValue(rows, [
+    "Declined",
+    "Declining",
+    "Decline",
+    "Losers",
+  ]);
+
+  const unchanged = findValue(rows, [
+    "Unchanged",
+    "Unchange",
+  ]);
+
+  // ------------------------------------------------
+  // Calculate DSEX change if possible
+  // ------------------------------------------------
+
+  if (
+    dsex !== null &&
+    previousClose !== null &&
+    previousClose > 0
+  ) {
+    const calculatedChange = dsex - previousClose;
+
+    // Ignore obviously incorrect scraped "Change" values.
+    if (
+      change === null ||
+      Math.abs(change) > dsex * 0.25
+    ) {
+      change = calculatedChange;
+    }
+
+    if (
+      changePercent === null ||
+      Math.abs(changePercent) > 25
+    ) {
+      changePercent =
+        (calculatedChange / previousClose) * 100;
+    }
+  }
+
+  // ------------------------------------------------
+  // Market condition
+  // ------------------------------------------------
+
+  let marketStatus = "FLAT";
+
+  if (change !== null) {
+    if (change > 0) {
+      marketStatus = "BULLISH";
+    } else if (change < 0) {
+      marketStatus = "BEARISH";
+    }
+  }
+
+  return {
+    market_date: todayISO(),
+
+    dsex:
+      dsex !== null
+        ? Number(dsex.toFixed(5))
+        : null,
+
+    previous_close:
+      previousClose !== null
+        ? Number(previousClose.toFixed(5))
+        : null,
+
+    change:
+      change !== null
+        ? Number(change.toFixed(5))
+        : null,
+
+    change_percent:
+      changePercent !== null
+        ? Number(changePercent.toFixed(5))
+        : null,
+
+    total_trades:
+      totalTrades !== null
+        ? Math.round(totalTrades)
+        : null,
+
+    total_volume:
+      totalVolume !== null
+        ? totalVolume
+        : null,
+
+    total_value:
+      totalValue !== null
+        ? totalValue
+        : null,
+
+    advanced:
+      advanced !== null
+        ? Math.round(advanced)
+        : null,
+
+    declined:
+      declined !== null
+        ? Math.round(declined)
+        : null,
+
+    unchanged:
+      unchanged !== null
+        ? Math.round(unchanged)
+        : null,
+
+    market_status: marketStatus,
+
+    scraped_at: new Date().toISOString(),
+  };
+}
+
+// --------------------------------------------------
+// Save to Supabase
+// --------------------------------------------------
+
+async function saveToSupabase(data) {
+  const endpoint = `${SUPABASE_URL}/rest/v1/market_summary`;
+
+  console.log("💾 Saving to Supabase...");
+
+  const response = await axios.post(
+    endpoint,
+    data,
+    {
+      timeout: 30000,
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+    }
+  );
 
   return response.data;
 }
 
-function extractSummary(html) {
-  const $ = cheerio.load(html);
-  const pageText = cleanText($('body').text());
+// --------------------------------------------------
+// Main
+// --------------------------------------------------
 
-  // DSE labels vary slightly across page versions, so multiple aliases are used.
-  const dsex = firstNonNull(
-    findRowValue($, ['DSEX Index', 'DSEX']),
-    findTextValue(pageText, ['DSEX Index', 'DSEX'])
-  );
+async function main() {
+  try {
+    console.log("");
+    console.log("======================================");
+    console.log("📈 DSE MARKET SUMMARY SCRAPER");
+    console.log("======================================");
+    console.log(`🕐 ${new Date().toISOString()}`);
+    console.log("");
 
-  const previousClose = firstNonNull(
-    findRowValue($, ['Previous Close', 'Prev. Close', 'Previous']),
-    findTextValue(pageText, ['Previous Close', 'Prev. Close'])
-  );
+    const rows = await scrapeDSE();
 
-  const totalTrades = firstNonNull(
-    findRowValue($, ['Total Trade', 'Total Trades', 'Trade']),
-    findTextValue(pageText, ['Total Trade', 'Total Trades'])
-  );
+    const summary = buildMarketSummary(rows);
 
-  const totalVolume = firstNonNull(
-    findRowValue($, ['Total Volume', 'Volume']),
-    findTextValue(pageText, ['Total Volume'])
-  );
+    console.log("");
+    console.log("📊 MARKET SUMMARY");
+    console.log("--------------------------------------");
+    console.log(JSON.stringify(summary, null, 2));
+    console.log("--------------------------------------");
+    console.log("");
 
-  const totalValue = firstNonNull(
-    findRowValue($, ['Total Value', 'Total Value in Taka', 'Turnover', 'Value']),
-    findTextValue(pageText, ['Total Value', 'Total Value in Taka', 'Turnover'])
-  );
-
-  const advanced = firstNonNull(
-    findRowValue($, ['Advanced', 'Advances', 'Advanced Issues']),
-    findTextValue(pageText, ['Advanced', 'Advances'])
-  );
-
-  const declined = firstNonNull(
-    findRowValue($, ['Declined', 'Declines', 'Declined Issues']),
-    findTextValue(pageText, ['Declined', 'Declines'])
-  );
-
-  const unchanged = firstNonNull(
-    findRowValue($, ['Unchanged', 'Unchanged Issues']),
-    findTextValue(pageText, ['Unchanged'])
-  );
-
-  // Prefer DSE's displayed change when present.
-  let change = firstNonNull(
-    findRowValue($, ['Change']),
-    findTextValue(pageText, ['Change'])
-  );
-
-  let changePercent = firstNonNull(
-    findRowValue($, ['Change %', 'Change (%)', 'Percent Change']),
-    findTextValue(pageText, ['Change %', 'Change (%)', 'Percent Change'])
-  );
-
-  // If change is not exposed separately, calculate it from current/previous.
-  if ((change === null || change === undefined) && dsex !== null && previousClose) {
-    change = dsex - previousClose;
-  }
-
-  if (
-    (changePercent === null || changePercent === undefined) &&
-    dsex !== null &&
-    previousClose
-  ) {
-    changePercent = ((dsex - previousClose) / previousClose) * 100;
-  }
-
-  const now = new Date();
-
-  // Do not silently save an all-zero/all-null record.
-  const essentialFound = [dsex, totalTrades, totalVolume, totalValue, advanced, declined, unchanged]
-    .some(v => v !== null && v !== undefined);
-
-  if (!essentialFound) {
-    throw new Error(
-      'DSE market summary fields পাওয়া যায়নি। DSE page markup পরিবর্তিত হতে পারে।'
-    );
-  }
-
-  return {
-    market_date: now.toISOString().slice(0, 10),
-    dsex,
-    previous_close: previousClose,
-    change,
-    change_percent: changePercent,
-    total_trades: totalTrades,
-    total_volume: totalVolume,
-    total_value: totalValue,
-    advanced,
-    declined,
-    unchanged,
-    market_status: 'UNKNOWN',
-    scraped_at: now.toISOString()
-  };
-}
-
-async function insertSummary(record) {
-  const url = `${SUPABASE_URL}/rest/v1/market_summary`;
-  const headers = {
-    apikey: SUPABASE_SERVICE_KEY,
-    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-    'Content-Type': 'application/json',
-    Prefer: 'return=minimal'
-  };
-
-  const response = await axios.post(url, record, {
-    headers,
-    httpsAgent: agent,
-    timeout: 15000
-  });
-
-  if (![200, 201, 202, 204].includes(response.status)) {
-    throw new Error(`Supabase status: ${response.status}`);
-  }
-}
-
-async function startScraper() {
-  console.log(`🕐 ${new Date().toISOString()} - Market Summary scrape শুরু...`);
-
-  const html = await fetchDsePage();
-  const summary = extractSummary(html);
-
-  console.log('📊 Market Summary:', JSON.stringify(summary, null, 2));
-
-  await insertSummary(summary);
-
-  console.log('✅ Market Summary Supabase-এ সেভ হয়েছে।');
-}
-
-if (require.main === module) {
-  startScraper().catch(err => {
-    console.error('❌ Market Summary scraper ব্যর্থ:', err.message);
-    if (err.response) {
-      console.error('📄 HTTP status:', err.response.status);
-      console.error('📄 Response:', err.response.data);
+    if (summary.dsex === null) {
+      throw new Error(
+        "❌ DSEX value could not be detected. Data was NOT saved."
+      );
     }
+
+    await saveToSupabase(summary);
+
+    console.log("✅ Market summary saved successfully.");
+    console.log("");
+  } catch (error) {
+    console.error("");
+    console.error("❌ MARKET SUMMARY SCRAPER FAILED");
+    console.error("--------------------------------------");
+
+    if (error.response) {
+      console.error(
+        `HTTP ${error.response.status}:`,
+        error.response.data
+      );
+    } else {
+      console.error(error.message);
+    }
+
+    console.error("--------------------------------------");
+    console.error("");
+
     process.exit(1);
-  });
+  }
 }
 
-module.exports = { startScraper, extractSummary };
+main();
