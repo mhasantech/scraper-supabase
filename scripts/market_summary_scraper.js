@@ -1,17 +1,13 @@
 /**
  * DSE Market Summary Scraper
  *
- * IMPORTANT:
- * - Existing scrapers are NOT modified.
- * - This is a standalone new scraper.
- *
- * Required environment variables:
- *   SUPABASE_URL
- *   SUPABASE_SERVICE_KEY
+ * Standalone scraper.
+ * Existing scrapers are NOT modified.
  */
 
 const axios = require("axios");
 const cheerio = require("cheerio");
+const https = require("https");
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -25,6 +21,12 @@ if (!SUPABASE_URL) {
 if (!SUPABASE_SERVICE_KEY) {
   throw new Error("❌ SUPABASE_SERVICE_KEY environment variable is missing");
 }
+
+// DSE's SSL certificate chain may not verify correctly
+// from GitHub Actions. This agent is used ONLY for DSE.
+const dseHttpsAgent = new https.Agent({
+  rejectUnauthorized: false,
+});
 
 // --------------------------------------------------
 // Helpers
@@ -83,11 +85,18 @@ async function scrapeDSE() {
 
   const response = await axios.get(DSE_URL, {
     timeout: 30000,
+
+    // Fix DSE SSL certificate verification problem
+    httpsAgent: dseHttpsAgent,
+
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+
+      "Accept-Language": "en-US,en;q=0.9",
     },
   });
 
@@ -119,7 +128,7 @@ async function scrapeDSE() {
 }
 
 // --------------------------------------------------
-// Find values safely
+// Find values
 // --------------------------------------------------
 
 function findValue(rows, labels) {
@@ -129,35 +138,15 @@ function findValue(rows, labels) {
     const normalizedRow = row.map(normalizeLabel);
 
     for (let i = 0; i < normalizedRow.length; i++) {
-      if (!normalizedLabels.includes(normalizedRow[i])) continue;
+      if (!normalizedLabels.includes(normalizedRow[i])) {
+        continue;
+      }
 
-      // Prefer value immediately after the label
       if (row[i + 1]) {
         const value = numberFromText(row[i + 1]);
 
         if (value !== null) {
           return value;
-        }
-      }
-
-      // Sometimes label/value are combined in one cell
-      const combined = row[i];
-
-      for (const label of labels) {
-        const regex = new RegExp(
-          label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
-            "\\s*[:\\-]?\\s*(-?\\d[\\d,.]*)",
-          "i"
-        );
-
-        const match = combined.match(regex);
-
-        if (match) {
-          const value = numberFromText(match[1]);
-
-          if (value !== null) {
-            return value;
-          }
         }
       }
     }
@@ -167,7 +156,7 @@ function findValue(rows, labels) {
 }
 
 // --------------------------------------------------
-// Find DSEX specifically
+// Find DSEX
 // --------------------------------------------------
 
 function findDSEX(rows) {
@@ -193,13 +182,11 @@ function findDSEX(rows) {
     return null;
   }
 
-  // DSEX normally appears as a 4-digit value.
-  // Prefer the first valid explicit DSEX value.
   return candidates[0];
 }
 
 // --------------------------------------------------
-// Build market summary
+// Build summary
 // --------------------------------------------------
 
 function buildMarketSummary(rows) {
@@ -207,7 +194,6 @@ function buildMarketSummary(rows) {
 
   let previousClose = findValue(rows, [
     "Previous Close",
-    "Previous close",
     "Prev. Close",
     "Prev Close",
   ]);
@@ -237,13 +223,11 @@ function buildMarketSummary(rows) {
   const totalVolume = findValue(rows, [
     "Total Volume",
     "Volume",
-    "Total Volume (mn)",
   ]);
 
   const totalValue = findValue(rows, [
     "Total Value",
     "Value",
-    "Total Value (mn)",
     "Turnover",
   ]);
 
@@ -267,7 +251,7 @@ function buildMarketSummary(rows) {
   ]);
 
   // ------------------------------------------------
-  // Calculate DSEX change if possible
+  // Calculate change from DSEX + previous close
   // ------------------------------------------------
 
   if (
@@ -277,7 +261,6 @@ function buildMarketSummary(rows) {
   ) {
     const calculatedChange = dsex - previousClose;
 
-    // Ignore obviously incorrect scraped "Change" values.
     if (
       change === null ||
       Math.abs(change) > dsex * 0.25
@@ -295,7 +278,7 @@ function buildMarketSummary(rows) {
   }
 
   // ------------------------------------------------
-  // Market condition
+  // Market status
   // ------------------------------------------------
 
   let marketStatus = "FLAT";
@@ -381,6 +364,7 @@ async function saveToSupabase(data) {
     data,
     {
       timeout: 30000,
+
       headers: {
         apikey: SUPABASE_SERVICE_KEY,
         Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
