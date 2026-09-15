@@ -190,33 +190,75 @@ function getMarketCondition(change) {
   return 'FLAT';
 }
 
+function parseFromPageText(html) {
+  const $ = cheerio.load(html);
+  const pageText = cleanText($('body').text());
+
+  // DSE's current page contains the live market block as plain text, but
+  // its HTML table structure can vary. Use the visible page text as a
+  // reliable fallback instead of depending on one exact DOM structure.
+  const dsexMatch = pageText.match(
+    /DSEX\s+Index\s+([+-]?\d[\d,]*(?:\.\d+)?)\s+([+-]?\d[\d,]*(?:\.\d+)?)\s+([+-]?\d[\d,]*(?:\.\d+)?)\s*%/i
+  );
+
+  const totalsMatch = pageText.match(
+    /Total\s+Trade\s+Total\s+Volume\s+Total\s+Value\s+in\s+Taka\s*\(mn\)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+(?:\.\d+)?)/i
+  );
+
+  const breadthMatch = pageText.match(
+    /Issues\s+Advanced\s+Issues\s+declined\s+Issues\s+Unchanged\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/i
+  );
+
+  return {
+    dsex: dsexMatch
+      ? {
+          dsex: parseNumber(dsexMatch[1]),
+          change: parseNumber(dsexMatch[2]),
+          change_percent: parseNumber(dsexMatch[3]),
+        }
+      : null,
+    totals: totalsMatch
+      ? [parseNumber(totalsMatch[1]), parseNumber(totalsMatch[2]), parseNumber(totalsMatch[3])]
+      : null,
+    breadth: breadthMatch
+      ? [parseNumber(breadthMatch[1]), parseNumber(breadthMatch[2]), parseNumber(breadthMatch[3])]
+      : null,
+  };
+}
+
 function extractMarketSummary(html) {
   const $ = cheerio.load(html);
   const rows = getRows($);
 
-  const dsex = findDsex(rows);
-  if (!dsex) {
-    throw new Error('DSEX Index row could not be found on DSE index.php');
-  }
-
-  const totals = findValuesBelowHeaders(rows, [
+  // Try the table parser first. DSE sometimes changes the HTML structure,
+  // so fall back to the visible page text when a row is not found.
+  let dsex = findDsex(rows);
+  let totals = findValuesBelowHeaders(rows, [
     'Total Trade',
     'Total Volume',
     'Total Value in Taka (mn)',
   ]);
-
-  if (!totals) {
-    throw new Error('Market totals row could not be found on DSE index.php');
-  }
-
-  const breadth = findValuesBelowHeaders(rows, [
+  let breadth = findValuesBelowHeaders(rows, [
     'Issues Advanced',
     'Issues declined',
     'Issues Unchanged',
   ]);
 
+  const fallback = parseFromPageText(html);
+  if (!dsex) dsex = fallback.dsex;
+  if (!totals) totals = fallback.totals;
+  if (!breadth) breadth = fallback.breadth;
+
+  if (!dsex) {
+    throw new Error('DSEX Index data could not be found on DSE index.php');
+  }
+
+  if (!totals) {
+    throw new Error('Market totals data could not be found on DSE index.php');
+  }
+
   if (!breadth) {
-    throw new Error('Market breadth row could not be found on DSE index.php');
+    throw new Error('Market breadth data could not be found on DSE index.php');
   }
 
   const previousClose =
