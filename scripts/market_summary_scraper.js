@@ -183,16 +183,46 @@ function findCardContext(html, label) {
 }
 
 function parseDsex(html, text) {
+  // IMPORTANT: parse the visible Market Summary text first.
+  // The rendered DSE page currently exposes the card as:
+  // DSEX 5,532.75 ▼ 0.82%
+  // Looking only at a raw HTML context can accidentally land on a
+  // script/component occurrence of "DSEX" that does not contain the
+  // visible percentage.
+  const visible = String(text || '').match(
+    /DSEX\s+([\d,]+(?:\.\d+)?)\s*(?:([▼▲])\s*)?([-+]?\d+(?:\.\d+)?)\s*%/i
+  );
+
+  if (visible) {
+    const dsex = numberFrom(visible[1]);
+    let changePercent = numberFrom(visible[3]);
+    const arrow = visible[2] || '';
+
+    if (arrow === '▼') changePercent = -Math.abs(changePercent);
+    if (arrow === '▲') changePercent = Math.abs(changePercent);
+
+    // DSE currently displays the percentage but not always the exact
+    // absolute index change in the Market Summary card. Derive the
+    // previous close and absolute change from the displayed percentage.
+    // This is consistent with the rounded percentage shown by DSE.
+    const previousClose = dsex / (1 + changePercent / 100);
+    const change = dsex - previousClose;
+
+    return {
+      dsex,
+      change: Number(change.toFixed(5)),
+      change_percent: changePercent,
+    };
+  }
+
+  // Fallback: inspect nearby rendered HTML in case DSE changes the text
+  // extraction format while keeping the percentage in the DOM.
   const contextHtml = findCardContext(html, 'DSEX');
   const context = cleanText(contextHtml);
 
-  // Expected rendered form:
-  // DSEX 5,532.75 ▼ 0.82%
-  // Also accepts: DSEX 5,532.75 -0.82%
   const pctMatch = context.match(
-    /DSEX\s+([\d,]+(?:\.\d+)?)\s+(?:[^\d+-]{0,12})?([-+]?\d+(?:\.\d+)?)\s*%/i
+    /DSEX\s+([\d,]+(?:\.\d+)?)\s*(?:([▼▲])\s*)?([-+]?\d+(?:\.\d+)?)\s*%/i
   );
-
   const valueMatch = context.match(/DSEX\s+([\d,]+(?:\.\d+)?)/i);
 
   if (!valueMatch) {
@@ -201,65 +231,22 @@ function parseDsex(html, text) {
 
   const dsex = numberFrom(valueMatch[1]);
 
-  let changePercent = pctMatch ? numberFrom(pctMatch[2]) : null;
-
-  // Determine direction from the small DSEX card context.
-  const lower = context.toLowerCase();
-  let direction = 0;
-
-  if (/▼|down|negative|text-red|text-danger|text-rose|text-red-\d+/.test(lower)) {
-    direction = -1;
-  } else if (/▲|up|positive|text-green|text-success|text-emerald|text-green-\d+/.test(lower)) {
-    direction = 1;
-  }
-
-  if (changePercent !== null && direction < 0) changePercent = -Math.abs(changePercent);
-  if (changePercent !== null && direction > 0) changePercent = Math.abs(changePercent);
-
-  // Try to recover an exact absolute change if it is present in hidden/accessibility
-  // markup near the DSEX card. Look for: index, change, percent.
-  const numbers = context
-    .replace(/,/g, '')
-    .match(/[-+]?\d+(?:\.\d+)?/g)
-    ?.map(Number) || [];
-
-  let exactChange = null;
-
-  if (changePercent !== null) {
-    for (let i = 0; i < numbers.length; i++) {
-      const n = numbers[i];
-      if (!Number.isFinite(n) || n === dsex) continue;
-      if (Math.abs(n) < 500 && Math.abs(n) > 0.001) {
-        // Avoid using the displayed percentage itself.
-        if (Math.abs(Math.abs(n) - Math.abs(changePercent)) < 0.000001) continue;
-        // DSEX daily move is normally much smaller than the index value.
-        if (Math.abs(n) <= dsex * 0.2) {
-          exactChange = direction < 0 ? -Math.abs(n) : Math.abs(n);
-          break;
-        }
-      }
-    }
-  }
-
-  // If no exact change exists in the DOM, derive it from the displayed percentage.
-  // The displayed percentage is rounded by DSE, so this is only a fallback.
-  if (exactChange === null && changePercent !== null) {
-    exactChange = dsex - dsex / (1 + changePercent / 100);
-    exactChange = Number(exactChange.toFixed(5));
-  }
-
-  if (changePercent === null && exactChange !== null && dsex !== exactChange) {
-    const previous = dsex - exactChange;
-    changePercent = Number(((exactChange / previous) * 100).toFixed(5));
-  }
-
-  if (changePercent === null) {
+  if (!pctMatch) {
     throw new Error('DSEX percentage change was not found on the rendered DSE page');
   }
 
+  let changePercent = numberFrom(pctMatch[3]);
+  const arrow = pctMatch[2] || '';
+
+  if (arrow === '▼') changePercent = -Math.abs(changePercent);
+  if (arrow === '▲') changePercent = Math.abs(changePercent);
+
+  const previousClose = dsex / (1 + changePercent / 100);
+  const change = dsex - previousClose;
+
   return {
     dsex,
-    change: exactChange ?? 0,
+    change: Number(change.toFixed(5)),
     change_percent: changePercent,
   };
 }
