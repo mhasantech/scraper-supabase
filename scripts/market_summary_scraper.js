@@ -1,36 +1,33 @@
 const axios = require('axios');
 const https = require('https');
+const { execFileSync } = require('child_process');
 
 // ============================================================
 // StockPulse - DSE Market Summary Scraper
-// Updated for the redesigned DSE site (JSON API)
+// DSE NEW WEBSITE: https://dse.com.bd/markets
+//
+// IMPORTANT:
+// The new DSE page is client-rendered. This scraper intentionally
+// renders the real DSE /markets page with the Chromium browser
+// available on GitHub Actions, then extracts the Market Summary.
+// This avoids relying on undocumented/unstable JSON field names.
 // ============================================================
+
+const DSE_PAGE_URL = 'https://dse.com.bd/markets';
+const TABLE_NAME = 'market_summary';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const TABLE_NAME = 'market_summary';
-
-const DSE_BASE_URLS = [
-  'https://dsebd.org',
-  'https://dse.com.bd',
-];
-
-const DSE_API = {
-  market: '/api/live/market',
-  prices: '/api/live/prices',
-  recentMarketInfo: '/api/live/recent-market-info',
-};
 
 if (!SUPABASE_URL) throw new Error('SUPABASE_URL environment variable is missing');
 if (!SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_SERVICE_KEY environment variable is missing');
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const dseHeaders = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-  Accept: 'application/json,text/plain,*/*',
+const headers = {
+  'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
-  Referer: 'https://dsebd.org/',
 };
 
 const supabaseHeaders = {
@@ -40,15 +37,17 @@ const supabaseHeaders = {
 };
 
 function cleanText(value) {
-  return String(value ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function numberFrom(value) {
-  if (value === null || value === undefined || value === '') return null;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const s = cleanText(value).replace(/,/g, '');
-  const m = s.match(/[-+]?\d+(?:\.\d+)?/);
-  return m ? Number(m[0]) : null;
+  return String(value ?? '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#x27;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, '&')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function getDhakaDate() {
@@ -66,359 +65,282 @@ function getDhakaDate() {
   return `${p.year}-${p.month}-${p.day}`;
 }
 
+function numberFrom(value) {
+  const m = String(value ?? '').replace(/,/g, '').match(/[-+]?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+
 function condition(change) {
   if (change > 0) return 'BULLISH';
   if (change < 0) return 'BEARISH';
   return 'FLAT';
 }
 
-function keyNorm(key) {
-  return String(key)
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function allObjects(value, out = []) {
-  if (!value || typeof value !== 'object') return out;
-
-  if (Array.isArray(value)) {
-    for (const item of value) allObjects(item, out);
-    return out;
-  }
-
-  out.push(value);
-  for (const child of Object.values(value)) {
-    if (child && typeof child === 'object') allObjects(child, out);
-  }
-  return out;
-}
-
-function findKeyValue(obj, aliases) {
-  const wanted = new Set(aliases.map(keyNorm));
-
-  for (const [key, value] of Object.entries(obj || {})) {
-    if (wanted.has(keyNorm(key))) {
-      const n = numberFrom(value);
-      if (n !== null) return n;
-    }
-  }
-
-  return null;
-}
-
-function findTextKey(obj, aliases) {
-  const wanted = new Set(aliases.map(keyNorm));
-
-  for (const [key, value] of Object.entries(obj || {})) {
-    if (wanted.has(keyNorm(key)) && value !== null && value !== undefined) {
-      return cleanText(value);
-    }
-  }
-
-  return null;
-}
-
-function findDsex(root) {
-  const objects = allObjects(root);
-
-  // Preferred: an object whose name/label/index identifies DSEX.
-  for (const obj of objects) {
-    const identity =
-      findTextKey(obj, ['name', 'label', 'index', 'indexName', 'index_name', 'symbol', 'code']);
-
-    if (!identity || !/dsex/i.test(identity)) continue;
-
-    const dsex =
-      findKeyValue(obj, ['value', 'current', 'currentValue', 'indexValue', 'index_value', 'close', 'ltp']);
-    const change =
-      findKeyValue(obj, ['change', 'netChange', 'net_change', 'changeValue', 'change_value']);
-    const changePercent =
-      findKeyValue(obj, ['changePercent', 'change_percentage', 'changePct', 'percentChange', 'percentageChange']);
-
-    if (dsex !== null) {
-      return {
-        dsex,
-        change: change ?? 0,
-        change_percent: changePercent,
-      };
-    }
-  }
-
-  // Fallback: look for a DSEX key directly.
-  for (const obj of objects) {
-    for (const [key, value] of Object.entries(obj)) {
-      if (/dsex/i.test(key) && value && typeof value === 'object') {
-        const dsex =
-          findKeyValue(value, ['value', 'current', 'currentValue', 'indexValue', 'close', 'ltp']);
-        const change =
-          findKeyValue(value, ['change', 'netChange', 'changeValue']);
-        const changePercent =
-          findKeyValue(value, ['changePercent', 'changePct', 'percentChange']);
-
-        if (dsex !== null) {
-          return { dsex, change: change ?? 0, change_percent: changePercent };
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-function findMarketTotals(root) {
-  const objects = allObjects(root);
-
+function findBrowser() {
   const candidates = [
-    ['totalTrades', 'totalTrade', 'trades', 'total_trade'],
-    ['totalVolume', 'volume', 'total_volume'],
-    ['totalValue', 'totalValueInTaka', 'turnover', 'value', 'total_value'],
+    process.env.CHROME_BIN,
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ].filter(Boolean);
+
+  for (const binary of candidates) {
+    try {
+      execFileSync(binary, ['--version'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 10000,
+      });
+      return binary;
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+function renderWithChromium() {
+  const browser = findBrowser();
+
+  if (!browser) {
+    throw new Error(
+      'Chromium/Google Chrome was not found on the GitHub Actions runner.'
+    );
+  }
+
+  console.log(`🌐 Rendering DSE page with: ${browser}`);
+
+  const args = [
+    '--headless=new',
+    '--no-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--disable-software-rasterizer',
+    '--disable-background-networking',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--window-size=1440,2200',
+    '--virtual-time-budget=15000',
+    '--run-all-compositor-stages-before-draw',
+    '--dump-dom',
+    DSE_PAGE_URL,
   ];
 
-  // Prefer an object that contains at least two of the three market-total concepts.
-  for (const obj of objects) {
-    const trade = findKeyValue(obj, candidates[0]);
-    const volume = findKeyValue(obj, candidates[1]);
-    const value = findKeyValue(obj, candidates[2]);
+  const html = execFileSync(browser, args, {
+    encoding: 'utf8',
+    timeout: 60000,
+    maxBuffer: 30 * 1024 * 1024,
+  });
 
-    if (trade !== null && volume !== null && value !== null) {
-      return [trade, volume, value];
-    }
+  if (!html || html.length < 1000) {
+    throw new Error('DSE page rendered an empty/too-small DOM response');
   }
 
-  return null;
+  return html;
 }
 
-function findBreadth(root) {
-  const objects = allObjects(root);
+async function fallbackHttpFetch() {
+  console.log('⚠️ Browser render unavailable; trying direct DSE HTML as fallback...');
 
-  for (const obj of objects) {
-    const advanced = findKeyValue(obj, [
-      'advanced', 'advances', 'issuesAdvanced', 'issues_advanced', 'gainers'
-    ]);
-    const declined = findKeyValue(obj, [
-      'declined', 'declines', 'issuesDeclined', 'issues_declined', 'losers'
-    ]);
-    const unchanged = findKeyValue(obj, [
-      'unchanged', 'issuesUnchanged', 'issues_unchanged', 'noChange', 'nochange'
-    ]);
-
-    if (advanced !== null && declined !== null && unchanged !== null) {
-      return [advanced, declined, unchanged];
-    }
-  }
-
-  return null;
-}
-
-function findPriceRows(root) {
-  const arrays = [];
-
-  function walk(value) {
-    if (!value || typeof value !== 'object') return;
-
-    if (Array.isArray(value)) {
-      if (value.length && value.some(x => x && typeof x === 'object')) {
-        arrays.push(value);
-      }
-      for (const item of value) walk(item);
-      return;
-    }
-
-    for (const child of Object.values(value)) walk(child);
-  }
-
-  walk(root);
-
-  // Choose the largest array containing recognizable price/trade fields.
-  let best = [];
-  for (const arr of arrays) {
-    const score = arr.reduce((s, row) => {
-      if (!row || typeof row !== 'object') return s;
-      const keys = Object.keys(row).map(keyNorm);
-      const hasSymbol = keys.some(k => ['symbol', 'code', 'tradingsymbol'].includes(k));
-      const hasPrice = keys.some(k => ['ltp', 'close', 'ycp', 'price'].includes(k));
-      const hasVolume = keys.some(k => ['volume', 'vol'].includes(k));
-      return s + (hasSymbol ? 2 : 0) + (hasPrice ? 2 : 0) + (hasVolume ? 1 : 0);
-    }, 0);
-
-    if (score > best.score) best = { score, rows: arr };
-  }
-
-  return best.rows || [];
-}
-
-function calculateFromPrices(root) {
-  const rows = findPriceRows(root);
-  if (!rows.length) return null;
-
-  let totalTrades = 0;
-  let totalVolume = 0;
-  let totalValue = 0;
-  let advanced = 0;
-  let declined = 0;
-  let unchanged = 0;
-  let valid = 0;
-
-  for (const row of rows) {
-    const trade = findKeyValue(row, ['trade', 'trades', 'numberOfTrades', 'noOfTrade']);
-    const volume = findKeyValue(row, ['volume', 'vol']);
-    const value = findKeyValue(row, ['value', 'tradeValue', 'turnover']);
-    const change = findKeyValue(row, ['change', 'netChange']);
-
-    const ltp = findKeyValue(row, ['ltp', 'lastPrice', 'currentPrice', 'price', 'close']);
-    const ycp = findKeyValue(row, ['ycp', 'previousClose', 'prevClose']);
-
-    if (trade !== null) totalTrades += trade;
-    if (volume !== null) totalVolume += volume;
-    if (value !== null) totalValue += value;
-
-    let direction = change;
-    if (direction === null && ltp !== null && ycp !== null) {
-      direction = ltp - ycp;
-    }
-
-    if (direction !== null) {
-      valid++;
-      if (direction > 0) advanced++;
-      else if (direction < 0) declined++;
-      else unchanged++;
-    }
-  }
-
-  if (!valid && !totalTrades && !totalVolume && !totalValue) return null;
-
-  return {
-    totals: [totalTrades, totalVolume, totalValue],
-    breadth: valid ? [advanced, declined, unchanged] : null,
-  };
-}
-
-async function getJson(url) {
-  const response = await axios.get(url, {
+  const response = await axios.get(DSE_PAGE_URL, {
     httpsAgent,
-    headers: dseHeaders,
-    timeout: 20000,
+    headers,
+    timeout: 30000,
     maxRedirects: 5,
-    responseType: 'json',
+    responseType: 'text',
     validateStatus: status => status >= 200 && status < 400,
   });
 
-  if (!response.data || typeof response.data !== 'object') {
-    throw new Error(`DSE API returned non-JSON data from ${url}`);
+  if (typeof response.data !== 'string' || response.data.length < 1000) {
+    throw new Error('DSE returned an empty/invalid HTML response');
   }
 
   return response.data;
 }
 
-async function getDseData() {
-  const errors = [];
+function marketSummaryText(html) {
+  const body = cleanText(html);
+  const marker = body.search(/Market Summary/i);
 
-  for (const base of DSE_BASE_URLS) {
-    for (const [name, path] of Object.entries(DSE_API)) {
-      try {
-        console.log(`📡 DSE API: ${base}${path}`);
-        const data = await getJson(`${base}${path}`);
-        console.log(`✅ ${name} API received`);
+  if (marker >= 0) {
+    // Keep enough room for all cards but stop before the next major section.
+    const tail = body.slice(marker, marker + 5000);
+    const stop = tail.search(/Category-wise Issues Summary|Category-wise|TOTAL TRANSACTIONS/i);
 
-        if (name === 'market') {
-          return { market: data, prices: null, source: `${base}${path}` };
+    return stop > 0 ? tail.slice(0, stop) : tail;
+  }
+
+  return body;
+}
+
+function findCardContext(html, label) {
+  const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  const match = re.exec(html);
+
+  if (!match) return '';
+
+  // The rendered card is normally close to the label in the DOM.
+  return html.slice(Math.max(0, match.index - 1000), match.index + 7000);
+}
+
+function parseDsex(html, text) {
+  const contextHtml = findCardContext(html, 'DSEX');
+  const context = cleanText(contextHtml);
+
+  // Expected rendered form:
+  // DSEX 5,532.75 ▼ 0.82%
+  // Also accepts: DSEX 5,532.75 -0.82%
+  const pctMatch = context.match(
+    /DSEX\s+([\d,]+(?:\.\d+)?)\s+(?:[^\d+-]{0,12})?([-+]?\d+(?:\.\d+)?)\s*%/i
+  );
+
+  const valueMatch = context.match(/DSEX\s+([\d,]+(?:\.\d+)?)/i);
+
+  if (!valueMatch) {
+    throw new Error('DSEX value was not found on the rendered DSE /markets page');
+  }
+
+  const dsex = numberFrom(valueMatch[1]);
+
+  let changePercent = pctMatch ? numberFrom(pctMatch[2]) : null;
+
+  // Determine direction from the small DSEX card context.
+  const lower = context.toLowerCase();
+  let direction = 0;
+
+  if (/▼|down|negative|text-red|text-danger|text-rose|text-red-\d+/.test(lower)) {
+    direction = -1;
+  } else if (/▲|up|positive|text-green|text-success|text-emerald|text-green-\d+/.test(lower)) {
+    direction = 1;
+  }
+
+  if (changePercent !== null && direction < 0) changePercent = -Math.abs(changePercent);
+  if (changePercent !== null && direction > 0) changePercent = Math.abs(changePercent);
+
+  // Try to recover an exact absolute change if it is present in hidden/accessibility
+  // markup near the DSEX card. Look for: index, change, percent.
+  const numbers = context
+    .replace(/,/g, '')
+    .match(/[-+]?\d+(?:\.\d+)?/g)
+    ?.map(Number) || [];
+
+  let exactChange = null;
+
+  if (changePercent !== null) {
+    for (let i = 0; i < numbers.length; i++) {
+      const n = numbers[i];
+      if (!Number.isFinite(n) || n === dsex) continue;
+      if (Math.abs(n) < 500 && Math.abs(n) > 0.001) {
+        // Avoid using the displayed percentage itself.
+        if (Math.abs(Math.abs(n) - Math.abs(changePercent)) < 0.000001) continue;
+        // DSEX daily move is normally much smaller than the index value.
+        if (Math.abs(n) <= dsex * 0.2) {
+          exactChange = direction < 0 ? -Math.abs(n) : Math.abs(n);
+          break;
         }
-
-        if (name === 'prices') {
-          return { market: null, prices: data, source: `${base}${path}` };
-        }
-      } catch (error) {
-        errors.push(`${base}${path}: ${error.response?.status || error.message}`);
       }
     }
   }
 
-  throw new Error(`All DSE API endpoints failed:\n${errors.join('\n')}`);
+  // If no exact change exists in the DOM, derive it from the displayed percentage.
+  // The displayed percentage is rounded by DSE, so this is only a fallback.
+  if (exactChange === null && changePercent !== null) {
+    exactChange = dsex - dsex / (1 + changePercent / 100);
+    exactChange = Number(exactChange.toFixed(5));
+  }
+
+  if (changePercent === null && exactChange !== null && dsex !== exactChange) {
+    const previous = dsex - exactChange;
+    changePercent = Number(((exactChange / previous) * 100).toFixed(5));
+  }
+
+  if (changePercent === null) {
+    throw new Error('DSEX percentage change was not found on the rendered DSE page');
+  }
+
+  return {
+    dsex,
+    change: exactChange ?? 0,
+    change_percent: changePercent,
+  };
+}
+
+function parseSummary(text) {
+  // These labels are visible on DSE's current Market Summary page.
+  const turnover = text.match(
+    /TURNOVER\s+BDT\s*([\d,]+(?:\.\d+)?)\s*mn/i
+  );
+
+  const volume = text.match(
+    /VOLUME\s+([\d,]+)\s+shares/i
+  );
+
+  const trades = text.match(
+    /TRADES\s+([\d,]+)\s+executions/i
+  );
+
+  const breadth = text.match(
+    /BREADTH\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i
+  );
+
+  if (!turnover) throw new Error('TURNOVER was not found on DSE /markets');
+  if (!volume) throw new Error('VOLUME was not found on DSE /markets');
+  if (!trades) throw new Error('TRADES was not found on DSE /markets');
+  if (!breadth) throw new Error('BREADTH was not found on DSE /markets');
+
+  return {
+    total_value: numberFrom(turnover[1]),
+    total_volume: numberFrom(volume[1]),
+    total_trades: numberFrom(trades[1]),
+    advanced: numberFrom(breadth[1]),
+    declined: numberFrom(breadth[2]),
+    unchanged: numberFrom(breadth[3]),
+  };
 }
 
 async function scrapeDse() {
-  const errors = [];
-  let market = null;
-  let prices = null;
-  let recent = null;
+  let html;
 
-  for (const base of DSE_BASE_URLS) {
-    for (const [name, path] of Object.entries(DSE_API)) {
-      try {
-        console.log(`📡 Scraping DSE JSON: ${base}${path}`);
-        const data = await getJson(`${base}${path}`);
-
-        if (name === 'market') market = data;
-        if (name === 'prices') prices = data;
-        if (name === 'recentMarketInfo') recent = data;
-      } catch (error) {
-        errors.push(`${base}${path}: ${error.response?.status || error.message}`);
-      }
-    }
-
-    if (market || prices || recent) break;
+  try {
+    html = renderWithChromium();
+  } catch (browserError) {
+    console.log(`⚠️ Chromium render failed: ${browserError.message}`);
+    html = await fallbackHttpFetch();
   }
 
-  if (!market && !prices && !recent) {
-    throw new Error(`DSE JSON API unavailable:\n${errors.join('\n')}`);
-  }
+  const text = marketSummaryText(html);
 
-  const combined = { market, prices, recent };
+  console.log(`📄 Rendered DSE DOM: ${html.length} bytes`);
+  console.log(`📊 Market Summary text: ${text.slice(0, 1200)}`);
 
-  const dsex = findDsex(combined);
-  let totals = findMarketTotals(combined);
-  let breadth = findBreadth(combined);
+  const dsex = parseDsex(html, text);
+  const summary = parseSummary(text);
 
-  // If the market endpoint doesn't expose aggregate totals, calculate them
-  // from the live price rows.
-  if (!totals || !breadth) {
-    const calculated = calculateFromPrices(prices || combined);
-    if (calculated) {
-      if (!totals) totals = calculated.totals;
-      if (!breadth) breadth = calculated.breadth;
-    }
-  }
-
-  if (!dsex) {
-    throw new Error(
-      'DSEX data not found in DSE JSON API. The API response format may have changed again.'
-    );
-  }
-
-  if (!totals) {
-    throw new Error(
-      'Market totals not found in DSE JSON API. Total trades/volume/value fields may have changed.'
-    );
-  }
-
-  if (!breadth) {
-    throw new Error(
-      'Market breadth not found in DSE JSON API. Advanced/declined/unchanged fields may have changed.'
-    );
-  }
-
-  const previousClose = Number((dsex.dsex - (dsex.change || 0)).toFixed(5));
-
-  return {
+  const data = {
     market_date: getDhakaDate(),
     dsex: dsex.dsex,
-    previous_close: previousClose,
-    change: dsex.change || 0,
-    change_percent:
-      dsex.change_percent !== null
-        ? dsex.change_percent
-        : previousClose
-          ? Number((((dsex.dsex - previousClose) / previousClose) * 100).toFixed(5))
-          : 0,
-    total_trades: Math.round(totals[0]),
-    total_volume: Math.round(totals[1]),
-    total_value: totals[2],
-    advanced: Math.round(breadth[0]),
-    declined: Math.round(breadth[1]),
-    unchanged: Math.round(breadth[2]),
-    market_status: condition(dsex.change || 0),
+    previous_close: Number((dsex.dsex - dsex.change).toFixed(5)),
+    change: dsex.change,
+    change_percent: dsex.change_percent,
+    total_trades: summary.total_trades,
+    total_volume: summary.total_volume,
+    total_value: summary.total_value,
+    advanced: summary.advanced,
+    declined: summary.declined,
+    unchanged: summary.unchanged,
+    market_status: condition(dsex.change),
     scraped_at: new Date().toISOString(),
   };
+
+  // Sanity checks prevent garbage data from being written to Supabase.
+  if (!(data.dsex > 0)) throw new Error('Invalid DSEX value');
+  if (!(data.total_trades >= 0)) throw new Error('Invalid total trades');
+  if (!(data.total_volume >= 0)) throw new Error('Invalid total volume');
+  if (!(data.total_value >= 0)) throw new Error('Invalid total value');
+  if (data.advanced < 0 || data.declined < 0 || data.unchanged < 0) {
+    throw new Error('Invalid market breadth values');
+  }
+
+  return data;
 }
 
 async function saveToSupabase(data) {
@@ -428,22 +350,27 @@ async function saveToSupabase(data) {
   console.log(`💾 Saving market summary for ${data.market_date}...`);
   console.log(`🔗 Supabase host: ${new URL(SUPABASE_URL).host}`);
 
-  const existing = await axios.get(`${base}?market_date=eq.${date}&select=id`, {
-    headers: supabaseHeaders,
-    timeout: 15000,
-  });
+  const existing = await axios.get(
+    `${base}?market_date=eq.${date}&select=id`,
+    {
+      headers: supabaseHeaders,
+      timeout: 15000,
+    }
+  );
 
   if (existing.data?.length) {
     await axios.patch(`${base}?market_date=eq.${date}`, data, {
       headers: { ...supabaseHeaders, Prefer: 'return=minimal' },
       timeout: 15000,
     });
+
     console.log('✅ Existing market summary updated');
   } else {
     await axios.post(base, data, {
       headers: { ...supabaseHeaders, Prefer: 'return=minimal' },
       timeout: 15000,
     });
+
     console.log('✅ New market summary inserted');
   }
 }
@@ -453,6 +380,7 @@ async function main() {
   console.log('📈 DSE MARKET SUMMARY SCRAPER');
   console.log('======================================');
   console.log(`🕐 ${new Date().toISOString()}`);
+  console.log(`🌐 Source: ${DSE_PAGE_URL}`);
 
   const data = await scrapeDse();
 
