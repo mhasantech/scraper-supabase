@@ -377,9 +377,12 @@ async function main() {
   console.log(`Change        : ${data.change}`);
   console.log(`Change %      : ${data.change_percent}%`);
   console.log(`Prev Close    : ${data.previous_close}`);
+  const volumeCrore = data.total_volume / 10000000;
+  const valueCrore = data.total_value / 10; // DSE value is parsed in BDT million
+
   console.log(`Total Trade   : ${data.total_trades}`);
-  console.log(`Total Volume  : ${data.total_volume}`);
-  console.log(`Total Value   : ${data.total_value} mn`);
+  console.log(`Total Volume  : ${volumeCrore.toFixed(2)} cr`);
+  console.log(`Total Value   : ${valueCrore.toFixed(2)} cr`);
   console.log(`Advanced      : ${data.advanced}`);
   console.log(`Declined      : ${data.declined}`);
   console.log(`Unchanged     : ${data.unchanged}`);
