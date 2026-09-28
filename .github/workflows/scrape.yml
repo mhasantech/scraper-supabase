@@ -34,7 +34,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/cse_scraper.js
 
-      - name: Run DSE Scraper (Live + Closing)
+      - name: Run DSE Scraper (Current DSE Website)
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/dse_scraper.js
