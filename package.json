@@ -4,11 +4,15 @@
   "description": "CSE & DSE Scraper with Supabase + Firebase Migration",
   "main": "scripts/cse_scraper.js",
   "scripts": {
-    "start": "node scripts/cse_scraper.js && node scripts/dse_scraper.js",
+    "start": "node scripts/cse_scraper.js && node scripts/dse_scraper.js && node scripts/dsex_scraper.js",
+    "cse": "node scripts/cse_scraper.js",
+    "dse": "node scripts/dse_scraper.js",
     "dsex": "node scripts/dsex_scraper.js",
+    "market-summary": "node scripts/market_summary_scraper.js",
+    "manual-scrape": "node scripts/manual_scrape.js",
     "daily-closing": "node scripts/update_daily_closing.js",
     "migrate": "node scripts/migrate_firebase_to_supabase.js",
-    "historical": "node scripts/update_historical_closing.js"
+    "historical": "node scripts/update_dse_history.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
