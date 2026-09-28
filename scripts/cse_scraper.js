@@ -1,216 +1,153 @@
 // scripts/cse_scraper.js
+// StockPulse - CSE current market scraper
+// CSE current-price page remains server-rendered, so use the official page
+// and parse its table instead of the old company-list assumptions.
 const axios = require('axios');
 const cheerio = require('cheerio');
-const https = require('https');
+const { httpsAgent, getDhakaDate, cleanText, numberFrom, normalizeHeader, upsert } = require('./lib/common');
 
-// ==========================================
-// 📌 Supabase কনফিগারেশন
-// ==========================================
-const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const CSE_LIST_URL = 'https://www.cse.com.bd/market/current_price';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36';
 
-if (!SUPABASE_SERVICE_KEY) {
-    console.error('❌ SUPABASE_SERVICE_KEY পাওয়া যায়নি।');
-    process.exit(1);
+async function fetchHtml(url) {
+  const response = await axios.get(url, {
+    httpsAgent,
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9'
+    },
+    timeout: 30000,
+    maxRedirects: 5,
+    responseType: 'text',
+    validateStatus: s => s >= 200 && s < 400
+  });
+  return response.data;
 }
 
-const agent = new https.Agent({ rejectUnauthorized: false });
+function parseCurrentPrice(html) {
+  const $ = cheerio.load(html);
+  const date = getDhakaDate();
+  const records = [];
 
-// ==========================================
-// 📡 Supabase REST API-তে আপসার্ট (on_conflict + সঠিক স্ট্যাটাস হ্যান্ডলিং)
-// ==========================================
-async function upsertToSupabase(table, record) {
-    // cse_market_data টেবিলের unique key হলো (code, date)
-    const conflictColumns = 'code,date';
-    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumns}`;
-    
-    const headers = {
-        'apikey': SUPABASE_SERVICE_KEY,
-        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates'
-    };
+  $('table').each((_, table) => {
+    let headers = [];
+    const first = $(table).find('tr').first();
+    first.find('th,td').each((_, cell) => headers.push(normalizeHeader($(cell).text())));
 
-    try {
-        const response = await axios.post(url, record, {
-            headers,
-            httpsAgent: agent,
-            timeout: 15000
-        });
+    const codeIdx = headers.findIndex(x => x === 'stockcode' || x === 'code');
+    const ltpIdx = headers.indexOf('ltp');
+    const highIdx = headers.indexOf('high');
+    const lowIdx = headers.indexOf('low');
+    const ycpIdx = headers.indexOf('ycp');
+    const tradeIdx = headers.indexOf('trade');
+    const valueIdx = headers.findIndex(x => x === 'valuemn' || x === 'value');
+    const volumeIdx = headers.indexOf('volume');
 
-        // Supabase ২০০, ২০১, ২০২, ২০৪ – সবগুলোই সফল রেসপন্স
-        if ([200, 201, 202, 204].includes(response.status)) {
-            return true;
-        }
+    if (codeIdx < 0 || ltpIdx < 0 || highIdx < 0 || lowIdx < 0 || ycpIdx < 0) return;
 
-        // অজানা স্ট্যাটাস পেলে সতর্কতা
-        console.warn(`⚠️ অজানা স্ট্যাটাস ${response.status} (${table})`);
-        return false;
+    $(table).find('tr').slice(1).each((_, tr) => {
+      const cells = $(tr).find('td').toArray().map(td => cleanText($(td).text()));
+      if (!cells.length) return;
+      const code = cleanText(cells[codeIdx]);
+      const ltp = numberFrom(cells[ltpIdx]);
+      if (!code || ltp === null) return;
+      const ycp = numberFrom(cells[ycpIdx]);
+      const change = ycp !== null ? ltp - ycp : 0;
+      const pct = ycp ? (change / ycp) * 100 : 0;
+      records.push({
+        code, date, ltp,
+        high: numberFrom(cells[highIdx]),
+        low: numberFrom(cells[lowIdx]),
+        category: null,
+        eps: null,
+        pe_ratio: null,
+        dividend: null,
+        record_date: null,
+        updated_at: new Date().toISOString(),
+        _trade: tradeIdx >= 0 ? numberFrom(cells[tradeIdx]) : null,
+        _value: valueIdx >= 0 ? numberFrom(cells[valueIdx]) : null,
+        _volume: volumeIdx >= 0 ? numberFrom(cells[volumeIdx]) : null,
+        _change: Number(change.toFixed(5)),
+        _change_percent: Number(pct.toFixed(5))
+      });
+    });
+  });
 
-    } catch (err) {
-        // on_conflict থাকায় ৪০৯ আসার কথা না, তবু এসে থাকলে সেটা এরর
-        if (err.response && err.response.status === 409) {
-            console.error(`❌ কনফ্লিক্ট! on_conflict কাজ করছে না (${record.code})`);
-            return false;
-        }
-
-        // অন্যান্য এরর লগ করুন
-        console.error(`❌ আপসার্ট ব্যর্থ (${record.code}):`, err.message);
-        if (err.response) {
-            console.error('📄 রেসপন্স ডেটা:', err.response.data);
-        }
-        return false;
-    }
+  return [...new Map(records.map(r => [r.code, r])).values()];
 }
 
-// ==========================================
-// 📡 একক কোম্পানি স্ক্র্যাপ
-// ==========================================
-async function scrapeSingleCompany(companyCode, todayDate) {
-    const detailUrl = `https://www.cse.com.bd/index.php?/company/companydetails/${companyCode}`;
-    try {
-        const { data } = await axios.get(detailUrl, {
-            httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-            timeout: 15000
-        });
-
-        const $ = cheerio.load(data);
-
-        let info = {
-            code: companyCode,
-            date: todayDate,
-            ltp: "N/A",
-            high: "N/A",
-            low: "N/A",
-            category: "N/A",
-            eps: "N/A",
-            pe_ratio: "N/A",
-            dividend: "N/A",
-            record_date: "N/A",
-            updated_at: new Date().toISOString()
-        };
-
-        $('table tr').each((i, el) => {
-            const cols = $(el).find('td');
-            cols.each((index, td) => {
-                const text = $(td).text().trim().toLowerCase();
-                if (text.includes('last trade price (ltp)')) {
-                    info.ltp = $(td).next('td').text().trim();
-                } else if (text.includes("day's range")) {
-                    const range = $(td).next('td').text().trim();
-                    if (range && range.includes('-')) {
-                        const parts = range.split('-');
-                        info.low = parts[0].trim();
-                        info.high = parts[1].trim();
-                    }
-                } else if (text.includes('market category')) {
-                    info.category = $(td).next('td').text().trim();
-                } else if (text.includes('hy eps') || (text === 'eps' && info.eps === "N/A")) {
-                    info.eps = $(td).next('td').text().trim();
-                } else if (text.includes('dividend(%)')) {
-                    info.dividend = $(td).next('td').text().trim();
-                } else if (text.includes('record date')) {
-                    info.record_date = $(td).next('td').text().trim();
-                }
-            });
-        });
-
-        const ltpNum = parseFloat(info.ltp);
-        const epsNum = parseFloat(info.eps);
-        if (!isNaN(ltpNum) && !isNaN(epsNum) && epsNum !== 0) {
-            info.pe_ratio = (ltpNum / epsNum).toFixed(2);
-        }
-
-        const success = await upsertToSupabase('cse_market_data', info);
-        if (success) {
-            console.log(`✅ CSE: ${companyCode} -> LTP: ${info.ltp}`);
-        } else {
-            console.log(`❌ CSE: ${companyCode} -> আপসার্ট ব্যর্থ`);
-        }
-
-    } catch (err) {
-        console.error(`❌ CSE স্ক্র্যাপ ব্যর্থ (${companyCode}):`, err.message);
-    }
+async function getCompanyDetails(code) {
+  const url = `https://www.cse.com.bd/index.php?/company/companydetails/${encodeURIComponent(code)}`;
+  try {
+    const html = await fetchHtml(url);
+    const $ = cheerio.load(html);
+    const info = {};
+    $('table tr').each((_, tr) => {
+      const cells = $(tr).find('td').toArray().map(td => cleanText($(td).text()));
+      for (let i = 0; i < cells.length - 1; i++) {
+        const label = cells[i].toLowerCase();
+        const value = cells[i + 1];
+        if (label.includes('market category')) info.category = value;
+        else if (label.includes('hy eps') || label === 'eps') info.eps = value;
+        else if (label.includes('dividend(%)')) info.dividend = value;
+        else if (label.includes('record date')) info.record_date = value;
+      }
+    });
+    return info;
+  } catch (_) {
+    return {};
+  }
 }
 
-// ==========================================
-// 📡 CSE তালিকা থেকে কোম্পানি আনা
-// ==========================================
-async function getCSECompanyList() {
-    const listUrl = "https://www.cse.com.bd/market/current_price";
-    try {
-        const { data } = await axios.get(listUrl, {
-            httpsAgent: agent,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-            timeout: 15000
-        });
-
-        const $ = cheerio.load(data);
-        let companies = [];
-
-        $('table tr').each((index, element) => {
-            if (index === 0) return;
-            const cols = $(element).find('td');
-            if (cols.length >= 2) {
-                const code = $(cols[1]).text().trim().replace(/[/\\.#$/[\]]/g, "-");
-                if (code && !companies.includes(code)) {
-                    companies.push(code);
-                }
-            }
-        });
-
-        return companies;
-    } catch (err) {
-        console.error("❌ CSE তালিকা আনা ব্যর্থ:", err.message);
-        return [];
-    }
-}
-
-// ==========================================
-// 📡 ব্যাকআপ লিস্ট
-// ==========================================
-function getBackupList() {
-    return [
-        "1JANATAMF", "1STPRIMFMF", "AAMRANET", "AAMRATECH", "ABB1STMF",
-        "ABBANK", "ACFL", "ACI", "ACIFORMULA", "ACMELAB",
-        "ACTIVEFINE", "ADNTEL", "ADVENT", "AFCAGRO", "AFTABAUTO",
-        "AGNISYSL", "AGRANINS", "AIBL1STIMF", "AIL", "AL-HAJTEX",
-        "ALARABANK", "ALIF", "ALLTEX", "AMANFEED", "AMBEEPHA",
-        "ANLIMAYARN", "ANWARGALV", "APEXFOODS", "APEXFOOT", "APEXSPINN"
-    ];
-}
-
-// ==========================================
-// 🚀 মেইন ফাংশন
-// ==========================================
 async function startScraper() {
-    console.log(`🕐 ${new Date().toISOString()} - CSE স্ক্র্যাপ শুরু...`);
-    const todayDate = new Date().toISOString().split('T')[0];
+  console.log('======================================');
+  console.log('📈 CSE MARKET SCRAPER');
+  console.log('======================================');
+  console.log(`🌐 Source: ${CSE_LIST_URL}`);
+  console.log(`📅 Market date: ${getDhakaDate()}`);
 
-    let companies = await getCSECompanyList();
-    if (companies.length === 0) {
-        console.log("⚠️ CSE তালিকা পাওয়া যায়নি, ব্যাকআপ লিস্ট ব্যবহার করছি...");
-        companies = getBackupList();
+  const html = await fetchHtml(CSE_LIST_URL);
+  const market = parseCurrentPrice(html);
+  console.log(`📊 CSE market rows: ${market.length}`);
+
+  if (market.length < 50) {
+    throw new Error(`CSE current-price page returned only ${market.length} usable rows; refusing to save partial data.`);
+  }
+
+  // Details are fetched with limited concurrency so the CSE server is not hammered.
+  const concurrency = 8;
+  let saved = 0;
+  for (let i = 0; i < market.length; i += concurrency) {
+    const chunk = market.slice(i, i + concurrency);
+    const enriched = await Promise.all(chunk.map(async r => {
+      const d = await getCompanyDetails(r.code);
+      const eps = numberFrom(d.eps);
+      const pe = eps && eps !== 0 ? Number((r.ltp / eps).toFixed(2)) : null;
+      return {
+        code: r.code, date: r.date, ltp: r.ltp, high: r.high, low: r.low,
+        category: d.category ?? null,
+        eps: d.eps ?? null,
+        pe_ratio: pe,
+        dividend: d.dividend ?? null,
+        record_date: d.record_date ?? null,
+        updated_at: r.updated_at
+      };
+    }));
+    for (const row of enriched) {
+      if (await upsert('cse_market_data', row, 'code,date')) saved++;
     }
+    await new Promise(r => setTimeout(r, 300));
+    console.log(`📦 CSE progress: ${Math.min(i + chunk.length, market.length)}/${market.length}`);
+  }
 
-    console.log(`📊 মোট ${companies.length}টি কোম্পানি পাওয়া গেছে।`);
-
-    const chunkSize = 10;
-    for (let i = 0; i < companies.length; i += chunkSize) {
-        const chunk = companies.slice(i, i + chunkSize);
-        console.log(`📡 প্রসেসিং ${i+1}-${Math.min(i+chunkSize, companies.length)}/${companies.length}`);
-        await Promise.all(chunk.map(code => scrapeSingleCompany(code, todayDate)));
-        await new Promise(r => setTimeout(r, 500));
-    }
-
-    console.log('✅ CSE স্ক্র্যাপিং সম্পন্ন!');
+  console.log(`🎉 CSE scraper completed: ${saved}/${market.length}`);
 }
 
-// ==========================================
-// 🔥 রান
-// ==========================================
-startScraper().catch(err => {
-    console.error('❌ Fatal error:', err);
-    process.exit(1);
+if (require.main === module) startScraper().catch(err => {
+  console.error('❌ CSE SCRAPER FAILED');
+  console.error(err.response?.data || err.message || err);
+  process.exit(1);
 });
+
+module.exports = { startScraper, parseCurrentPrice };
