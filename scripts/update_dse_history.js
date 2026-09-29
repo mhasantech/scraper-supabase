@@ -409,6 +409,57 @@ async function batchUpsert(ticker, records) {
     return saved;
 }
 
+
+// ==========================================
+// POST-SAVE DATABASE VERIFICATION
+// ==========================================
+async function verifyDatabaseWrite(expectedStartDate, expectedEndDate) {
+    const headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Accept': 'application/json',
+        'Prefer': 'count=exact'
+    };
+
+    const url = `${SUPABASE_URL}/rest/v1/history_dse` +
+        `?select=ticker,date&date=gte.${encodeURIComponent(expectedStartDate)}` +
+        `&date=lte.${encodeURIComponent(expectedEndDate)}` +
+        `&order=date.desc&limit=1`;
+
+    const response = await axios.get(url, {
+        headers,
+        httpsAgent,
+        timeout: 20000,
+        validateStatus: status => status >= 200 && status < 300
+    });
+
+    const rows = Array.isArray(response.data) ? response.data : [];
+    const contentRange = response.headers?.['content-range'] || '';
+    const countMatch = contentRange.match(/\/([0-9]+|\*)$/);
+    const rangeCount = countMatch && countMatch[1] !== '*' ? Number(countMatch[1]) : null;
+    const latestDate = rows[0]?.date || null;
+
+    console.log('');
+    console.log('🔎 DATABASE WRITE VERIFICATION');
+    console.log(`📌 Supabase project: ${SUPABASE_URL}`);
+    console.log(`📌 Table: history_dse`);
+    console.log(`📌 Requested range: ${expectedStartDate} → ${expectedEndDate}`);
+    console.log(`📌 Latest date actually returned by DB: ${latestDate || 'NONE'}`);
+    if (rangeCount !== null) {
+        console.log(`📌 DB rows inside requested range: ${rangeCount}`);
+    }
+
+    if (!latestDate) {
+        throw new Error('DATABASE VERIFICATION FAILED: history_dse-তে requested range-এর কোনো row পাওয়া যায়নি।');
+    }
+
+    if (latestDate < expectedStartDate || latestDate > expectedEndDate) {
+        throw new Error(`DATABASE VERIFICATION FAILED: latest DB date ${latestDate}, expected ${expectedStartDate} → ${expectedEndDate}`);
+    }
+
+    console.log('✅ DATABASE VERIFICATION PASSED: নতুন history_dse rows সত্যিই database থেকে read-back করা গেছে।');
+}
+
 // ==========================================
 // Main update
 // ==========================================
@@ -533,6 +584,10 @@ async function updateDSEHistory() {
     if (totalSaved === 0) {
         throw new Error('কোনো record Supabase-এ save হয়নি।');
     }
+
+    // Do not trust the local 'records upserted' counter alone. Read the table
+    // back from Supabase and verify that the requested date range is actually present.
+    await verifyDatabaseWrite(HISTORY_START_DATE, today);
 
     console.log('🎉 history_dse backfill/update সম্পূর্ণ সফল।');
 }
