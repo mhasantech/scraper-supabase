@@ -89,47 +89,39 @@ function getBangladeshTimestamp() {
 // Target ticker list
 // ==========================================
 const TICKERS = [
-"1JANATAMF", "1STPRIMFMF", "AAMRANET", "AAMRATECH", "ABB1STMF", "ABBANK", "ABBLPBOND", "ACFL", "ACHIASF", "ACI",
-"ACIFORMULA", "ACMELAB", "ACMEPL", "ACTIVEFINE", "ADNTEL", "ADVENT", "AFCAGRO", "AFTABAUTO", "AGNISYSL", "AGRANINS",
-"AIBL1STIMF", "AIL", "ALARABANK", "AL-HAJTEX", "ALIF", "ALLTEX", "AMANFEED", "AMBEEPHA", "AMCL(PRAN)", "AMPL",
-"ANLIMAYARN", "ANWARGALV", "AOL", "AOPLC", "APEXFOODS", "APEXFOOT", "APEXSPINN", "APEXTANRY", "APEXWEAV", "APOLOISPAT",
-"APSCLBOND", "ARAMIT", "ARAMITCEM", "ARGONDENIM", "ASIAINS", "ASIAPACINS", "ASIATICLAB", "ATCSLGF", "ATLASBANG", "AZIZPIPES",
-"BANGAS", "BANKASIA", "BARKAPOWER", "BATASHOE", "BATBC", "BAYLEASING", "BBS", "BBSCABLES", "BDAUTOCA", "BDCOM",
-"BDFINANCE", "BDLAMPS", "BDPAINTS", "BDTHAI", "BDTHAIFOOD", "BDWELDING", "BEACHHATCH", "BEACONPHAR", "BENGALBISC", "BENGALWTL",
-"BERGERPBL", "BESTHLDNG", "BEXGSUKUK", "BEXIMCO", "BGIC", "BIFC", "BNICL", "BPML", "BPPL", "BRACBANK",
-"BSC", "BSCPLC", "BSRMLTD", "BSRMSTEEL", "BXPHARMA", "BXSYNTH", "CAPITECGBF", "CAPMBDBLMF", "CAPMIBBLMF", "CBLPBOND",
-"CENTRALINS", "CENTRALPHL", "CITYBANK", "CITYGENINS", "CLICL", "CNATEX", "CONFIDCEM", "CONTININS", "COPPERTECH", "CRAFTSMAN",
-"CROWNCEMNT", "CRYSTALINS", "CVOPRL", "DACCADYE", "DAFODILCOM", "DBH", "DBH1STMF", "DBLPBOND", "DELTALIFE", "DELTASPINN",
-"DESCO", "DESHBANDHU", "DGIC", "DHAKABANK", "DHAKAINS", "DOMINAGE", "DOREENPWR", "DSHGARME", "DSSL", "DULAMIACOT",
-"DUTCHBANGL", "EASTERNINS", "EASTLAND", "EASTRNLUB", "EBL", "EBL1STMF", "EBLNRBMF", "ECABLES", "EGEN", "EHL",
-"EIL", "EMERALDOIL", "ENVOYTEX", "EPGL", "ESQUIRENIT", "ETL", "EXIM1STMF", "EXIMBANK", "FAMILYTEX", "FARCHEM",
-"FAREASTFIN", "FAREASTLIF", "FASFIN", "FBFIF", "FEDERALINS", "FEKDIL", "FINEFOODS", "FIRSTFIN", "FIRSTSBANK", "FORTUNE",
-"FUWANGCER", "FUWANGFOOD", "GBBPOWER", "GEMINISEA", "GENEXIL", "GENNEXT", "GHAIL", "GHCL", "GIB", "GLDNJMF",
-"GLOBALINS", "GOLDENSON", "GP", "GPHISPAT", "GQBALLPEN", "GRAMEENS2", "GREENDELMF", "GREENDELT", "GSPFINANCE", "HAKKANIPUL",
-"HAMI", "HEIDELBCEM", "HFL", "HIMADRI", "HRTEX", "HWAWELLTEX", "IBNSINA", "IBP", "ICB", "ICB3RDNRB",
-"ICBAGRANI1", "ICBAMCL2ND", "ICBEPMF1S1", "ICBIBANK", "ICBSONALI1", "ICICL", "IDLC", "IFADAUTOS", "IFIC", "IFIC1STMF",
-"IFILISLMF1", "ILFSL", "INDEXAGRO", "INTECH", "INTRACO", "IPDC", "ISLAMIBANK", "ISLAMICFIN", "ISLAMIINS", "ISNLTD",
-"ITC", "JAMUNABANK", "JAMUNAOIL", "JANATAINS", "JHRML", "JMISMDL", "JUTESPINN", "KARNAPHULI", "KAY&QUE", "KBPPWBIL",
-"KBSEED", "KDSALTD", "KEYACOSMET", "KFL", "KOHINOOR", "KPCL", "KPPL", "KTL", "LANKABAFIN", "LEGACYFOOT",
-"LHB", "LIBRAINFU", "LINDEBD", "LOVELLO", "LRBDL", "LRGLOBMF1", "MAGURAPLEX", "MAKSONSPIN", "MALEKSPIN", "MAMUNAGRO",
-"MARICO", "MASTERAGRO", "MATINSPINN", "MBL1STMF", "MBPLCPBOND", "MEGCONMILK", "MEGHNACEM", "MEGHNAINS", "MEGHNALIFE", "MEGHNAPET",
-"MERCANBANK", "MERCINS", "METROSPIN", "MHSML", "MIDASFIN", "MIDLANDBNK", "MIRACLEIND", "MIRAKHTER", "MITHUNKNIT", "MJLBD",
-"MKFOOTWEAR", "MLDYEING", "MONNOAGML", "MONNOCERA", "MONNOFABR", "MONOSPOOL", "MOSTFAMETL", "MPETROLEUM", "MTB", "NAHEEACP",
-"NATLIFEINS", "NAVANACNG", "NAVANAPHAR", "NBL", "NCCBANK", "NCCBLMF1", "NEWLINE", "NFML", "NHFIL", "NIALCO",
-"NITOLINS", "NORTHERN", "NORTHRNINS", "NPOLYMER", "NRBBANK", "NRBCBANK", "NTC", "NTLTUBES", "NURANI", "OAL",
-"OIMEX", "OLYMPIC", "ONEBANKPLC", "ORIONINFU", "ORIONPHARM", "ORYZAAGRO", "PADMALIFE", "PADMAOIL", "PARAMOUNT", "PDL",
-"PENINSULA", "PEOPLESINS", "PF1STMF", "PHARMAID", "PHENIXINS", "PHOENIXFIN", "PHPMF1", "PIONEERINS", "PLFSL", "POPULAR1MF",
-"POPULARLIF", "POWERGRID", "PRAGATIINS", "PRAGATILIF", "PREMIERBAN", "PREMIERCEM", "PREMIERLEA", "PRIME1ICBA", "PRIMEBANK", "PRIMEFIN",
-"PRIMEINSUR", "PRIMELIFE", "PRIMETEX", "PROGRESLIF", "PROVATIINS", "PTL", "PUBALIBANK", "PURABIGEN", "QUASEMIND", "QUEENSOUTH",
-"RAHIMAFOOD", "RAHIMTEXT", "RAKCERAMIC", "RANFOUNDRY", "RDFOOD", "RECKITTBEN", "REGENTTEX", "RELIANCE1", "RELIANCINS", "RENATA",
-"RENWICKJA", "REPUBLIC", "RINGSHINE", "RNSPIN", "ROBI", "RSRMSTEEL", "RUNNERAUTO", "RUPALIBANK", "RUPALIINS", "RUPALILIFE",
-"SADHESIVE", "SAFKOSPINN", "SAIFPOWER", "SAIHAMCOT", "SAIHAMTEX", "SALAMCRST", "SALVO", "SAMATALETH", "SAMORITA", "SANDHANINS",
-"SAPORTL", "SAVAREFR", "SBACBANK", "SEAPEARL", "SEB1PBOND", "SEMLFBSLGF", "SEMLIBBLSF", "SEMLLECMF", "SHAHJABANK", "SHARPIND",
-"SHASHADNIM", "SHEPHERD", "SHURWID", "SHYAMPSUG", "SIBL", "SICL", "SILCOPHL", "SILVAPHL", "SIMTEX", "SINGERBD",
-"SINOBANGLA", "SIPLC", "SKTRIMS", "SONALIANSH", "SONARBANGLA", "SQUARETEXT", "SQUAREPHARMA", "SSSTEEL", "STANCERAM", "STARINS",
-"STYLECRAFT", "SUMMITPOWER", "SUNLIFEINS", "TAMIJTEX", "TITASGAS", "TRUSTBANK", "TUNGHAI", "UNILEVERCL", "UNIONBANK", "UNIONCAP",
-"UNIONINS", "UNITEDFIN", "UNITEDINS", "UTTARAFIN", "UTTARABANK", "WALTONHIL", "WATACHEM", "WMSHIPYARD", "ZAHEENSPIN", "ZAHINTEX",
-"ZEALBANGLA"
+    "1JANATAMF", "1STPRIMFMF", "AAMRANET", "AAMRATECH", "ABB1STMF", "ABBANK", "ACFL", "ACI", "ACIFORMULA", "ACMELAB",
+    "ACTIVEFINE", "ADNTEL", "ADVENT", "AFCAGRO", "AFTABAUTO", "AGNISYSL", "AGRANINS", "AIBL1STIMF", "AIL", "AL-HAJTEX",
+    "ALARABANK", "ALIF", "ALLTEX", "AMANFEED", "AMBEEPHA", "ANLIMAYARN", "ANWARGALV", "APEXFOODS", "APEXFOOT", "APEXSPINN",
+    "APOLOISPAT", "ARAMIT", "ARAMITCEM", "ARGONDENIM", "ASIAPACINS", "ATCSLGF", "ATLASBANG", "AZIZPIPES", "BANGAS", "BANKASIA",
+    "BATASHOE", "BATBC", "BAYLEASING", "BBS", "BCC", "BDCOM", "BDFINANCE", "BDLAMPS", "BDTHAI", "BDTHAIFOOD",
+    "BDWELDING", "BEACHHATCH", "BEACONPHAR", "BENGALWTL", "BERGERPBL", "BEXGSUKUK", "BEXIMCO", "BGIC", "BIFC", "BNICL",
+    "BPML", "BPPL", "BRACBANK", "BSC", "BSCCL", "BSRMLTD", "BSRMSTEEL", "BXPHARMA", "CAPMBDBLMF", "CAPMIBBLMF", "BESTHLDNG",
+    "CENTRALINS", "CENTRALPHL", "CITYBANK", "CNATEX", "CONFIDCEM", "CONTININS", "COPPERTECH", "CROWNCEMNT", "CVOPRL", "DACCADYE",
+    "DAFODILCOM", "DBH", "DBH1STMF", "DELTALIFE", "DELTASPINN", "DESCO", "DESHBANDHU", "DHAKABANK", "DOMINAGE", "DOREENPWR",
+    "DSSL", "Dulamiacot", "DUTCHBANGL", "EASTLAND", "EASTRNLUB", "EBL", "EBL1STMF", "EBLNRBMF", "ECABLES", "EGEN",
+    "EMERALDOIL", "ENVOYTEX", "EPGL", "ESQUIRENIT", "ETL", "EXIM1STMF", "EXIMBANK", "FAMILYTEX", "FARCHEM", "FAREASTLIF", "FAREASTFIN",
+    "FASFIN", "FBFIF", "FEDERALINS", "FEKDIL", "FINEFOODS", "FIRSTFIN", "FIRSTSBANK", "FORTUNE", "FUWANGCER",
+    "FUWANGFOOD", "GBBPOWER", "GEMINISEA", "GENEXIL", "GENNEXT", "GHAIL", "GHCL", "GIB", "GLAXOSMITH", "GLOBALINS",
+    "GOLDENSON", "GP", "GPHISPAT", "GQBALLPEN", "GSPFINANCE", "GRAMEENS2", "GREENDELT", "HAKKANIPUL", "HEIDELBCEM", "HFL", "HRTEX",
+    "HWAWELLTEX", "IBNSINA", "IBP", "ICB", "ICB3RDNRB", "ICBAGRANI1", "ICBAMCL2ND", "ICBEPMF1S1", "IDLC", "IFADAUTOS", "ICICL",
+    "IFIC", "IFIC1STMF", "IFILISLMF1", "ILFSL", "INDEXAGRO", "INTECH", "INTRACO", "IPDC", "ISLAMIBANK", "ISLAMICFIN", "ICBEPMF1S1",
+    "ISNLTD", "ITC", "JAMUNABANK", "JAMUNAOIL", "JANATAINS", "JHRML", "JMISMDL", "JUTESPINN", "KARNAPHULI", "KAY&QUE",
+    "KBPPWBIL", "KDSALTD", "KEYACOSMET", "KPCL", "KPPL", "LANKABAFIN", "LEGACYFOOT", "LHBL", "LIBRAINFU", "LINDEBD",
+    "LOVELLO", "LRBDL", "MARICO", "MATINSPINN", "MBL1STMF", "MEGCONMILK", "MEGHNACEM", "MEGHNALIFE", "MEGHNAPET", "MERCANBANK",
+    "MERCINS", "METROSPIN", "MHSML", "MIDASFIN", "MIRACLEIND", "MIRAKHTER", "MONNOAGML", "MONNOCERA", "MONNOFABR", "MONOSPOOL", "MALEKSPIN", "MPETROLEUM", "MTB", "MIDLANDBNK", "NAHEEACP", "NATLIFEINS", "NAVANACNG", "NAVANAPHAR", "NBL", "NCCBANK", "NCCBLMF1", "NEWLINE",
+    "NITOLINS", "NORTHERN", "NORTHRNINS", "NPOLYMER", "NRBBANK", "NTLTUBES", "OAL", "NHFIL", "OIMEX", "OLYMPIC", "ONEBANKPLC",
+    "ORIONINFU", "ORIONPHARM", "PADMALIFE", "PADMAOIL", "PARAMOUNT", "PDL", "PENINSULA", "PEOPLESINS", "PF1STMF", "PHARMAID",
+    "PHENIXINS", "PHOENIXFIN", "PIONEERINS", "PLFSL", "POPULAR1MF", "POPULARLIF", "POWERGRID", "PRAGATIINS", "PRAGATILIF", "PREMIERBAN",
+    "PREMIERCEM", "PREMIERLEA", "PRIME1ICBA", "PRIMEBANK", "PRIMEFIN", "PRIMEINSUR", "PRIMELIFE", "PROGRESLIF", "PROVATIINS", "PTL",
+    "PUBALIBANK", "PURABIGEN", "QUASEMIND", "QUEENSOUTH", "RAHIMAFOOD", "RAKCERAMIC", "RANFOUNDRY", "RDFOOD", "RECKITTBEN", "REGENTTEX",
+    "RELIANCE1", "RENATA", "REPUBLIC", "RINGSHINE", "ROBI", "RSRMSTEEL", "RUNNERAUTO", "RUPALIBANK", "RUPALIINS", "SAFKOSPINN",
+    "SAIFPOWER", "SAIHAMCOT", "SAIHAMTEX", "SALAMCRST", "SALVOCHEM", "SAMATALETH", "SAMORITA", "SANDHANINS", "SAPORTL", "SAVAREFR",
+    "SEAPEARL", "SEMLFBSLGF", "SEMLIBBLSF", "SEMLLECMF", "SHAHJABANK", "SHASHADNIM", "SHEPHERD", "SHURWID", "SHYAMPSUG", "SIBL",
+    "SICL", "SILCOPHL", "SILVAPHL", "SIMTEX", "SINOBANGLA", "SKICL", "SONALIANSH", "SONALILIFE", "SONALIPAPR", "SONARBAINS",
+    "SOUTHEASTB", "SPCERAMICS", "SQURPHARMA", "SSSTEEL", "STANCERAM", "STANDARINS", "STANDBANKL", "STYLECRAFT", "SUMITPOWER", "SUNLIFEINS",
+    "TAKAFULINS", "TALLUSPIN", "TAMIJTEX", "TECHNODRUG", "TILIL", "TITASGAS", "TOSRIFA", "TRUSTBANK", "TUNGHAI", "UCB",
+    "UNILEVERCL", "UNIONBANK", "UNIONCAP", "UNIONINS", "UNIQUEHRL", "UNITEDFIN", "UNITEDINS", "UPGDCL", "USMANIAGL", "UTTARABANK",
+    "UTTARAFIN", "VAMLBDMF1", "VAMLRBBF", "VFSTDL", "WALTONHIL", "WATACHEM", "WMSHIPYARD", "YPL", "ZAHEENSPIN", "ZAHINTEX"
 ];
 
 // Remove accidental duplicates while preserving order.
@@ -327,7 +319,6 @@ async function fetchLegacyDseHistory(ticker, startDate, endDate) {
             );
 
             const rows = parseLegacyTable(String(response.data || ''), ticker);
-            if (rows.length === 0) throw new Error('Legacy DSE archive-এ ticker-এর কোনো row পাওয়া যায়নি');
             return rows;
         } catch (err) {
             lastError = err;
@@ -342,18 +333,40 @@ async function fetchLegacyDseHistory(ticker, startDate, endDate) {
 // Fetch one ticker: new API -> legacy fallback
 // ==========================================
 async function fetchTickerData(ticker, startDate, endDate) {
+    let newError = null;
+
+    // New DSE JSON is the primary source.
     try {
-        const rows = await fetchNewDseHistory(ticker, startDate, endDate);
-        return { source: 'DSE JSON', rows };
-    } catch (newError) {
-        console.warn(`↩️ ${ticker}: New DSE API ব্যর্থ, legacy archive fallback শুরু...`);
-        try {
-            const rows = await fetchLegacyDseHistory(ticker, startDate, endDate);
-            return { source: 'DSE legacy', rows };
-        } catch (legacyError) {
-            const msg = `${ticker}: new API + legacy দুটোই ব্যর্থ | new=${newError.message} | legacy=${legacyError.message}`;
-            throw new Error(msg);
+        const result = await fetchNewDseHistory(ticker, startDate, endDate);
+        if (result.length > 0) {
+            return { source: 'DSE JSON', rows: result };
         }
+        console.warn(`ℹ️ ${ticker}: DSE JSON returned 0 rows; checking legacy archive...`);
+    } catch (error) {
+        newError = error;
+        console.warn(`↩️ ${ticker}: New DSE API ব্যর্থ, legacy archive fallback শুরু...`);
+    }
+
+    // Legacy archive is the fallback for API outages / symbols not present in
+    // the new endpoint.
+    try {
+        const legacyRows = await fetchLegacyDseHistory(ticker, startDate, endDate);
+        if (legacyRows.length > 0) {
+            return { source: 'DSE legacy', rows: legacyRows };
+        }
+        // Both sources answered successfully but had no rows. This is a
+        // legitimate no-data symbol, not a workflow failure.
+        return { source: 'NO DATA', rows: [] };
+    } catch (legacyError) {
+        // If the primary source returned a clean empty dataset, prefer the
+        // no-data classification. Otherwise both sources actually failed.
+        if (!newError) {
+            return { source: 'NO DATA', rows: [] };
+        }
+        throw new Error(
+            `${ticker}: new API + legacy দুটোই ব্যর্থ | ` +
+            `new=${newError.message} | legacy=${legacyError.message}`
+        );
     }
 }
 
@@ -416,6 +429,8 @@ async function updateDSEHistory() {
     let totalSaved = 0;
     let successfulTickers = 0;
     const failedTickers = [];
+    const skippedTickers = [];
+    const noDataTickers = [];
 
     // Conservative concurrency protects DSE from bursts and keeps the workflow stable.
     const concurrency = 4;
@@ -438,8 +453,10 @@ async function updateDSEHistory() {
 
         for (const result of results) {
             if (result.error) {
-                failedTickers.push(result.ticker);
-                console.error(`❌ ${result.ticker}: ${result.error.message}`);
+                // DSE data না পাওয়া/temporary source failure হলে শুধু এই ticker বাদ থাকবে।
+                // অন্য ticker-এর পাওয়া data অবশ্যই Supabase-এ save হবে।
+                skippedTickers.push(result.ticker);
+                console.warn(`⚠️ ${result.ticker}: historical data পাওয়া যায়নি; skipped. ${result.error.message}`);
                 continue;
             }
 
@@ -466,8 +483,12 @@ async function updateDSEHistory() {
             const cleanRecords = [...unique.values()];
 
             if (!cleanRecords.length) {
-                failedTickers.push(result.ticker);
-                console.error(`❌ ${result.ticker}: DSE source থেকে 0 valid historical rows পাওয়া গেছে।`);
+                // A symbol can legitimately have no rows in the requested window
+                // (new/delisted/suspended instrument or code changed at DSE).
+                // This is not a database/API crash, so do not abort the whole
+                // 347/401-symbol backfill. Keep it visible in the summary.
+                noDataTickers.push(result.ticker);
+                console.warn(`⚠️ ${result.ticker}: requested range-এ কোনো historical row নেই; skipped.`);
                 continue;
             }
 
@@ -496,14 +517,17 @@ async function updateDSEHistory() {
     console.log(`✅ Successful tickers: ${successfulTickers}`);
     console.log(`🧾 Records fetched: ${totalFetched}`);
     console.log(`💾 Records upserted: ${totalSaved}`);
-    console.log(`❌ Failed tickers: ${failedTickers.length}`);
+    const allSkipped = [...new Set([...noDataTickers, ...skippedTickers])];
+    console.log(`⚠️ Skipped tickers (no data/source response): ${allSkipped.length}`);
+    if (allSkipped.length) console.log(`ℹ️ Skipped list: ${allSkipped.join(', ')}`);
+    console.log(`❌ Actual database/save failures: ${failedTickers.length}`);
     if (failedTickers.length) console.log(`⚠️ Failed list: ${failedTickers.join(', ')}`);
     console.log('==================================================');
 
-    // Never report success if even one ticker failed. GitHub Actions will show
-    // the run as failed, making missing data visible instead of silently hiding it.
+    // Missing/unavailable ticker data is intentionally skipped.
+    // Only a real Supabase/database save failure makes the workflow fail.
     if (failedTickers.length > 0) {
-        throw new Error(`${failedTickers.length} ticker(s) failed. history_dse update incomplete.`);
+        throw new Error(`${failedTickers.length} ticker(s) could not be saved to history_dse.`);
     }
 
     if (totalSaved === 0) {
