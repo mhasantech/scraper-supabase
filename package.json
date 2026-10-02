@@ -12,7 +12,10 @@
     "manual-scrape": "node scripts/manual_scrape.js",
     "daily-closing": "node scripts/update_daily_closing.js",
     "migrate": "node scripts/migrate_firebase_to_supabase.js",
-    "historical": "node scripts/update_dse_history.js"
+    "historical": "node scripts/update_dse_history.js",
+    "precompute:indicators": "node scripts/precompute_indicators.js",
+    "backup:firebase": "node scripts/backup_supabase_to_firebase.js",
+    "cleanup:firebase-market-backups": "node scripts/cleanup_legacy_market_backups.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
