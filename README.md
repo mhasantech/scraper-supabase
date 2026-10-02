@@ -75,3 +75,18 @@ Do this only after confirming the old market-data backups are no longer required
 
 Run once in Supabase SQL Editor:
 `stock_metadata_migration.sql`
+
+## DSE history + index scraper (fixed)
+
+The historical updater no longer depends on `bd-stock-api-an3n.vercel.app`. It installs `bdshare`, fetches DSE historical OHLCV data with retry/fallback support, and writes normalized rows into `history_dse`. The updater refreshes the last 7 days on every run so a partially missed ticker/day can be repaired.
+
+The DSEX updater no longer renders `/markets` in Chromium. It reads DSEX, DSES and DS30 from DSE's server-rendered **Recent Market Information** table and calculates daily absolute/percentage changes from consecutive DSE index values.
+
+Run `stockpulse_history_constraints.sql` once in Supabase SQL Editor before the first fixed history run. This creates the `(ticker,date)` unique index required for safe PostgREST upserts.
+
+Python requirement for history updater:
+
+```bash
+pip install -r requirements.txt
+node scripts/update_dse_history.js
+```
