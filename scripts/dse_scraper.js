@@ -75,59 +75,18 @@ async function scrapeDSELatestPrices() {
   }
 
   let liveSaved = 0, closeSaved = 0;
-  let closingSchemaFallbackUsed = false;
-
   for (const r of records) {
     if (await upsert('dse_live_data', r, 'ticker,date')) liveSaved++;
 
-    // Your Supabase project already has daily_closing_prices.
-    // Keep a single closing table instead of creating dse_closing_prices.
-    // First try to store the richer DSE closing fields; if the existing
-    // table does not have one of those optional columns, retry with the
-    // core columns that are already used by update_daily_closing.js.
     const close = {
       ticker: r.ticker, date: r.date, ltp: r.ltp,
       high: r.high, low: r.low, volume: r.volume,
       updated_at: r.updated_at
     };
-
-    if (closingSchemaFallbackUsed) {
-      const minimalClose = {
-        ticker: r.ticker,
-        date: r.date,
-        ltp: r.ltp,
-        updated_at: r.updated_at
-      };
-      if (await upsert('daily_closing_prices', minimalClose, 'ticker,date')) closeSaved++;
-      continue;
-    }
-
-    try {
-      if (await upsert('daily_closing_prices', close, 'ticker,date')) closeSaved++;
-    } catch (err) {
-      const code = err.response?.data?.code;
-      const message = String(err.response?.data?.message || err.message || '');
-      const missingColumn = code === 'PGRST204' || code === '42703' || /column .* does not exist|Could not find the .* column/i.test(message);
-
-      if (!missingColumn) throw err;
-
-      const minimalClose = {
-        ticker: r.ticker,
-        date: r.date,
-        ltp: r.ltp,
-        updated_at: r.updated_at
-      };
-      if (await upsert('daily_closing_prices', minimalClose, 'ticker,date')) {
-        closeSaved++;
-        closingSchemaFallbackUsed = true;
-      }
-    }
+    if (await upsert('daily_closing_prices', close, 'ticker,date')) closeSaved++;
   }
 
-  if (closingSchemaFallbackUsed) {
-    console.log('ℹ️ daily_closing_prices-এর optional DSE columns না থাকায় core fields (ticker/date/ltp/updated_at) দিয়ে save করা হয়েছে।');
-  }
-  console.log(`✅ DSE complete: live ${liveSaved}/${records.length}, daily closing ${closeSaved}/${records.length}`);
+  console.log(`✅ DSE complete: live ${liveSaved}/${records.length}, closing ${closeSaved}/${records.length}`);
   return records;
 }
 

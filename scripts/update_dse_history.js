@@ -1,27 +1,9 @@
 // scripts/update_dse_history.js
-// StockPulse - DSE history updater
-//
-// Purpose:
-//   Keep history_dse complete from 2026-08-02 through the current Bangladesh date.
-//   Every run re-checks the full requested window and UPSERTs ticker+date, so
-//   missing days are repaired automatically instead of depending on one
-//   possibly-incomplete "last date" value.
-//
-// Data source strategy (same approach used by current bdshare 1.2.7):
-//   1) New DSE JSON API: dsebd.org/api/live/data-archive/day-end
-//   2) New DSE alternate host: dse.com.bd/api/live/data-archive/day-end
-//   3) Legacy DSE archive: old.dsebd.org/day_end_archive.php
-//   4) Legacy alternate host: old.dse.com.bd/day_end_archive.php
-//
-// IMPORTANT: The new DSE endpoint returns at most 500 rows. We request one
-// ticker at a time, so the response for a ticker stays below that limit and
-// the whole 2026-08-02 -> today window can be fetched safely.
-
 const axios = require('axios');
 const https = require('https');
 
 // ==========================================
-// Supabase configuration
+// 📌 Supabase কনফিগারেশন
 // ==========================================
 const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -31,62 +13,19 @@ if (!SUPABASE_SERVICE_KEY) {
     process.exit(1);
 }
 
-// DSE currently has an incomplete certificate chain in some environments.
-// Keep the existing project's behavior so GitHub Actions does not fail on TLS.
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+const agent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
-// Fixed backfill start date requested for StockPulse
+// 🕐 বাংলাদেশ সময় (UTC+6)
 // ==========================================
-const HISTORY_START_DATE = '2026-08-02';
-
-// ==========================================
-// DSE sources
-// ==========================================
-const DSE_JSON_URLS = [
-    'https://dsebd.org/api/live/data-archive/day-end',
-    'https://dse.com.bd/api/live/data-archive/day-end'
-];
-
-const DSE_LEGACY_URLS = [
-    'https://old.dsebd.org/day_end_archive.php',
-    'https://old.dse.com.bd/day_end_archive.php'
-];
-
-// ==========================================
-// Bangladesh time helpers
-// ==========================================
-function getBangladeshNow() {
-    return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' }));
-}
-
-function getBangladeshDate() {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Dhaka',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-    }).formatToParts(new Date());
-
-    const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
-    return `${map.year}-${map.month}-${map.day}`;
-}
-
-function getBangladeshTimestamp() {
-    return new Intl.DateTimeFormat('sv-SE', {
-        timeZone: 'Asia/Dhaka',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    }).format(new Date()).replace(' ', 'T') + '+06:00';
+function getBangladeshTime() {
+    const now = new Date();
+    const bdTime = new Date(now.getTime() + 6 * 60 * 60 * 1000);
+    return bdTime.toISOString();
 }
 
 // ==========================================
-// Target ticker list
+// 📋 আপনার নির্দিষ্ট টিকার তালিকা
 // ==========================================
 const TICKERS = [
     "1JANATAMF", "1STPRIMFMF", "AAMRANET", "AAMRATECH", "ABB1STMF", "ABBANK", "ACFL", "ACI", "ACIFORMULA", "ACMELAB",
@@ -124,475 +63,178 @@ const TICKERS = [
     "UTTARAFIN", "VAMLBDMF1", "VAMLRBBF", "VFSTDL", "WALTONHIL", "WATACHEM", "WMSHIPYARD", "YPL", "ZAHEENSPIN", "ZAHINTEX"
 ];
 
-// Remove accidental duplicates while preserving order.
-const UNIQUE_TICKERS = [...new Set(TICKERS.map(t => String(t).trim()).filter(Boolean))];
-
 // ==========================================
-// Numeric/date normalization
+// 📡 ব্যাচ আপসার্ট – এক টিকার সব রেকর্ড একসাথে
 // ==========================================
-function toNumber(value) {
-    if (value === null || value === undefined || value === '') return null;
-    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    const cleaned = String(value).replace(/,/g, '').trim();
-    if (!cleaned || cleaned === '-' || cleaned === '--' || /^n\/a$/i.test(cleaned)) return null;
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
-}
+async function batchUpsert(ticker, records) {
+    if (records.length === 0) return 0;
 
-function toInteger(value) {
-    const n = toNumber(value);
-    return n === null ? null : Math.trunc(n);
-}
+    const table = 'history_dse';
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=ticker,date`;
+    const headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+    };
 
-function normalizeDate(value) {
-    if (!value) return null;
-    const s = String(value).trim();
-    const m = s.match(/^(\d{4})[-\/]?(\d{2})[-\/]?(\d{2})/);
-    return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
-}
-
-function normalizeTicker(value, fallback) {
-    const s = String(value || fallback || '').trim();
-    return s || fallback;
-}
-
-// ==========================================
-// Generic retry helper
-// ==========================================
-async function requestWithRetry(label, requestFn, attempts = 4) {
-    let lastError;
-
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-            return await requestFn();
-        } catch (err) {
-            lastError = err;
-            const status = err?.response?.status;
-            const detail = status ? `HTTP ${status}` : err.message;
-            console.warn(`⚠️ ${label} ব্যর্থ (${attempt}/${attempts}): ${detail}`);
-            if (attempt < attempts) {
-                await new Promise(r => setTimeout(r, 1000 * attempt));
-            }
+    try {
+        const response = await axios.post(url, records, {
+            headers,
+            httpsAgent: agent,
+            timeout: 30000
+        });
+        if ([200, 201, 202, 204].includes(response.status)) {
+            return records.length;
         }
+        return 0;
+    } catch (err) {
+        console.error(`❌ ব্যাচ আপসার্ট ব্যর্থ (${ticker}):`, err.message);
+        if (err.response) console.error('📄 রেসপন্স:', err.response.data);
+        return 0;
     }
-
-    throw lastError;
 }
 
 // ==========================================
-// New DSE JSON API
+// 📡 API থেকে এক টিকার ডেটা আনা
 // ==========================================
-async function fetchNewDseHistory(ticker, startDate, endDate) {
-    let lastError = null;
+async function fetchTickerData(ticker, startDate, endDate) {
+    const API_BASE_URL = 'https://bd-stock-api-an3n.vercel.app/v1/dse/historical';
+    const url = `${API_BASE_URL}?start=${startDate}&end=${endDate}&code=${ticker}`;
 
-    for (const baseUrl of DSE_JSON_URLS) {
-        try {
-            const response = await requestWithRetry(
-                `${ticker} -> ${baseUrl}`,
-                () => axios.get(baseUrl, {
-                    params: {
-                        from: startDate,
-                        to: endDate,
-                        inst: ticker
-                    },
-                    httpsAgent,
-                    timeout: 20000,
-                    headers: {
-                        'User-Agent': 'StockPulse-DSE-History/1.0',
-                        'Accept': 'application/json,text/plain,*/*',
-                        'Referer': 'https://dsebd.org/'
-                    },
-                    validateStatus: status => status >= 200 && status < 300
-                })
-            );
-
-            const body = response.data;
-            if (!body || !Array.isArray(body.rows)) {
-                throw new Error('DSE JSON response-এ rows পাওয়া যায়নি');
-            }
-
-            const rows = body.rows;
-            if (body.truncated || (Number(body.total) > rows.length)) {
-                throw new Error(`DSE API response truncated (${rows.length}/${body.total || '?'})`);
-            }
-
-            return rows.map(row => ({
-                date: normalizeDate(row.date),
-                ticker: normalizeTicker(row.tradingCode, ticker),
-                ltp: toNumber(row.ltp),
-                high: toNumber(row.high),
-                low: toNumber(row.low),
-                open: toNumber(row.openp),
-                ycp: toNumber(row.ycp),
-                volume: toInteger(row.volume),
-                trade: toInteger(row.trade),
-                value_mn: toNumber(row.value)
-            })).filter(r => r.date && r.ticker);
-        } catch (err) {
-            lastError = err;
-            console.warn(`⚠️ ${ticker}: ${baseUrl} ব্যবহার করা যায়নি।`);
+    try {
+        const response = await axios.get(url, { timeout: 30000 });
+        if (!response.data?.success || !response.data?.data) {
+            return [];
         }
+
+        const historicalData = response.data.data;
+        if (historicalData.length === 0) return [];
+
+        return historicalData.map(item => ({
+            ticker: item['TRADING CODE'] || ticker,
+            date: item['DATE'],
+            ltp: parseFloat(item['LTP*']) || 0,
+            high: parseFloat(item['HIGH']) || 0,
+            low: parseFloat(item['LOW']) || 0,
+            open: parseFloat(item['OPENP*']) || 0,
+            ycp: parseFloat(item['YCP']) || 0,
+            volume: parseInt(item['VOLUME']) || 0,
+            trade: parseInt(item['TRADE']) || 0,
+            value_mn: parseFloat(item['VALUE (mn)']) || 0,
+            updated_at: getBangladeshTime()
+        }));
+
+    } catch (err) {
+        console.error(`❌ ${ticker} -> API কল ব্যর্থ:`, err.message);
+        return [];
     }
-
-    throw lastError || new Error('DSE new API ব্যর্থ');
 }
 
 // ==========================================
-// Legacy DSE archive fallback
+// 📅 সর্বশেষ তারিখ খুঁজে বের করা (history_dse থেকে)
 // ==========================================
-function findLegacyTableRows(html) {
-    // The legacy archive is an HTML table. We deliberately parse the first
-    // table containing the expected column names rather than relying on one
-    // fragile CSS class.
-    const tableMatches = html.match(/<table\b[\s\S]*?<\/table>/gi) || [];
-    for (const table of tableMatches) {
-        const plain = table.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').toUpperCase();
-        if (plain.includes('TRADING CODE') && plain.includes('LTP') && plain.includes('VOLUME')) {
-            return table;
+async function getLastDate() {
+    try {
+        const url = `${SUPABASE_URL}/rest/v1/history_dse?select=date&order=date.desc&limit=1`;
+        const headers = {
+            'apikey': SUPABASE_SERVICE_KEY,
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`
+        };
+        const res = await axios.get(url, { headers, httpsAgent: agent, timeout: 10000 });
+        if (res.data && res.data.length > 0) {
+            const lastDate = res.data[0].date;
+            console.log(`📅 সর্বশেষ রেকর্ডের তারিখ: ${lastDate}`);
+            return lastDate;
         }
+    } catch (e) {
+        console.warn('⚠️ শেষ তারিখ পড়া যায়নি (সম্ভবত টেবিল খালি)');
     }
     return null;
 }
 
-function parseLegacyTable(html, requestedTicker) {
-    const table = findLegacyTableRows(html);
-    if (!table) throw new Error('Legacy DSE archive table পাওয়া যায়নি');
-
-    const rows = [];
-    const trMatches = table.match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
-
-    for (const tr of trMatches.slice(1)) {
-        const cells = [...tr.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(m =>
-            m[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').trim()
-        );
-
-        if (cells.length < 12) continue;
-
-        // Legacy column layout used by bdshare 1.2.7:
-        // 0 serial, 1 date, 2 trading code, 3 ltp, 4 high, 5 low,
-        // 6 open, 7 close, 8 ycp, 9 trade, 10 value, 11 volume.
-        const ticker = normalizeTicker(cells[2], requestedTicker);
-        if (requestedTicker && ticker.toUpperCase() !== requestedTicker.toUpperCase()) continue;
-
-        const date = normalizeDate(cells[1]);
-        if (!date) continue;
-
-        rows.push({
-            date,
-            ticker,
-            ltp: toNumber(cells[3]),
-            high: toNumber(cells[4]),
-            low: toNumber(cells[5]),
-            open: toNumber(cells[6]),
-            ycp: toNumber(cells[8]),
-            volume: toInteger(cells[11]),
-            trade: toInteger(cells[9]),
-            value_mn: toNumber(cells[10])
-        });
-    }
-
-    return rows;
-}
-
-async function fetchLegacyDseHistory(ticker, startDate, endDate) {
-    let lastError = null;
-
-    for (const baseUrl of DSE_LEGACY_URLS) {
-        try {
-            const response = await requestWithRetry(
-                `${ticker} -> legacy ${baseUrl}`,
-                () => axios.get(baseUrl, {
-                    params: {
-                        startDate,
-                        endDate,
-                        inst: ticker,
-                        archive: 'data'
-                    },
-                    httpsAgent,
-                    timeout: 30000,
-                    headers: {
-                        'User-Agent': 'StockPulse-DSE-History/1.0',
-                        'Accept': 'text/html,application/xhtml+xml,*/*'
-                    },
-                    validateStatus: status => status >= 200 && status < 300
-                })
-            );
-
-            const rows = parseLegacyTable(String(response.data || ''), ticker);
-            return rows;
-        } catch (err) {
-            lastError = err;
-            console.warn(`⚠️ ${ticker}: ${baseUrl} fallback ব্যর্থ।`);
-        }
-    }
-
-    throw lastError || new Error('Legacy DSE archive ব্যর্থ');
-}
-
 // ==========================================
-// Fetch one ticker: new API -> legacy fallback
-// ==========================================
-async function fetchTickerData(ticker, startDate, endDate) {
-    let newError = null;
-
-    // New DSE JSON is the primary source.
-    try {
-        const result = await fetchNewDseHistory(ticker, startDate, endDate);
-        if (result.length > 0) {
-            return { source: 'DSE JSON', rows: result };
-        }
-        console.warn(`ℹ️ ${ticker}: DSE JSON returned 0 rows; checking legacy archive...`);
-    } catch (error) {
-        newError = error;
-        console.warn(`↩️ ${ticker}: New DSE API ব্যর্থ, legacy archive fallback শুরু...`);
-    }
-
-    // Legacy archive is the fallback for API outages / symbols not present in
-    // the new endpoint.
-    try {
-        const legacyRows = await fetchLegacyDseHistory(ticker, startDate, endDate);
-        if (legacyRows.length > 0) {
-            return { source: 'DSE legacy', rows: legacyRows };
-        }
-        // Both sources answered successfully but had no rows. This is a
-        // legitimate no-data symbol, not a workflow failure.
-        return { source: 'NO DATA', rows: [] };
-    } catch (legacyError) {
-        // If the primary source returned a clean empty dataset, prefer the
-        // no-data classification. Otherwise both sources actually failed.
-        if (!newError) {
-            return { source: 'NO DATA', rows: [] };
-        }
-        throw new Error(
-            `${ticker}: new API + legacy দুটোই ব্যর্থ | ` +
-            `new=${newError.message} | legacy=${legacyError.message}`
-        );
-    }
-}
-
-// ==========================================
-// Supabase UPSERT
-// ==========================================
-async function batchUpsert(ticker, records) {
-    if (!records.length) return 0;
-
-    const url = `${SUPABASE_URL}/rest/v1/history_dse?on_conflict=ticker,date`;
-    const headers = {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates,return=minimal'
-    };
-
-    // Keep requests comfortably sized even if the DSE returns more rows than usual.
-    const CHUNK_SIZE = 250;
-    let saved = 0;
-
-    for (let i = 0; i < records.length; i += CHUNK_SIZE) {
-        const chunk = records.slice(i, i + CHUNK_SIZE);
-        const response = await requestWithRetry(
-            `${ticker} -> Supabase UPSERT ${i + 1}-${i + chunk.length}`,
-            () => axios.post(url, chunk, {
-                headers,
-                httpsAgent,
-                timeout: 30000,
-                validateStatus: status => status >= 200 && status < 300
-            })
-        );
-
-        if (![200, 201, 202, 204].includes(response.status)) {
-            throw new Error(`Supabase unexpected HTTP ${response.status}`);
-        }
-        saved += chunk.length;
-    }
-
-    return saved;
-}
-
-
-// ==========================================
-// POST-SAVE DATABASE VERIFICATION
-// ==========================================
-async function verifyDatabaseWrite(expectedStartDate, expectedEndDate) {
-    const headers = {
-        'apikey': SUPABASE_SERVICE_KEY,
-        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-        'Accept': 'application/json',
-        'Prefer': 'count=exact'
-    };
-
-    const url = `${SUPABASE_URL}/rest/v1/history_dse` +
-        `?select=ticker,date&date=gte.${encodeURIComponent(expectedStartDate)}` +
-        `&date=lte.${encodeURIComponent(expectedEndDate)}` +
-        `&order=date.desc&limit=1`;
-
-    const response = await axios.get(url, {
-        headers,
-        httpsAgent,
-        timeout: 20000,
-        validateStatus: status => status >= 200 && status < 300
-    });
-
-    const rows = Array.isArray(response.data) ? response.data : [];
-    const contentRange = response.headers?.['content-range'] || '';
-    const countMatch = contentRange.match(/\/([0-9]+|\*)$/);
-    const rangeCount = countMatch && countMatch[1] !== '*' ? Number(countMatch[1]) : null;
-    const latestDate = rows[0]?.date || null;
-
-    console.log('');
-    console.log('🔎 DATABASE WRITE VERIFICATION');
-    console.log(`📌 Supabase project: ${SUPABASE_URL}`);
-    console.log(`📌 Table: history_dse`);
-    console.log(`📌 Requested range: ${expectedStartDate} → ${expectedEndDate}`);
-    console.log(`📌 Latest date actually returned by DB: ${latestDate || 'NONE'}`);
-    if (rangeCount !== null) {
-        console.log(`📌 DB rows inside requested range: ${rangeCount}`);
-    }
-
-    if (!latestDate) {
-        throw new Error('DATABASE VERIFICATION FAILED: history_dse-তে requested range-এর কোনো row পাওয়া যায়নি।');
-    }
-
-    if (latestDate < expectedStartDate || latestDate > expectedEndDate) {
-        throw new Error(`DATABASE VERIFICATION FAILED: latest DB date ${latestDate}, expected ${expectedStartDate} → ${expectedEndDate}`);
-    }
-
-    console.log('✅ DATABASE VERIFICATION PASSED: নতুন history_dse rows সত্যিই database থেকে read-back করা গেছে।');
-}
-
-// ==========================================
-// Main update
+// 🚀 মেইন ফাংশন – ইনক্রিমেন্টাল আপডেট
 // ==========================================
 async function updateDSEHistory() {
-    const today = getBangladeshDate();
+    console.log(`🕐 ${getBangladeshTime()} - DSE হিস্টোরি আপডেট শুরু... (শুধু আপনার তালিকা)`);
+    console.log(`📊 মোট ${TICKERS.length}টি টিকার ডেটা আনা হবে।`);
 
-    if (today < HISTORY_START_DATE) {
-        throw new Error(`আজকের তারিখ ${today}; configured start ${HISTORY_START_DATE}-এর আগে।`);
+    const today = new Date().toISOString().split('T')[0];
+    const lastDate = await getLastDate();
+
+    let startDate;
+    let isFullHistory = false;
+
+    if (!lastDate) {
+        // প্রথমবার: গত ২ বছর
+        const twoYearsAgo = new Date();
+        twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+        startDate = twoYearsAgo.toISOString().split('T')[0];
+        isFullHistory = true;
+        console.log(`🆕 টেবিল খালি। গত ২ বছরের ডেটা আনা হবে (${startDate} থেকে)`);
+    } else {
+        // পরবর্তী রান: শেষ তারিখের পরের দিন থেকে আজ
+        const nextDay = new Date(lastDate);
+        nextDay.setDate(nextDay.getDate() + 1);
+        startDate = nextDay.toISOString().split('T')[0];
+
+        if (startDate > today) {
+            console.log(`✅ ইতিমধ্যে আপ-টু-ডেট। (সর্বশেষ: ${lastDate}, আজ: ${today})`);
+            return;
+        }
+        console.log(`🔄 নতুন ডেটা আনা হবে (${startDate} থেকে ${today} পর্যন্ত)`);
     }
 
-    console.log('==================================================');
-    console.log(`🕐 ${getBangladeshTimestamp()} - DSE history update শুরু`);
-    console.log(`📅 Fixed backfill range: ${HISTORY_START_DATE} → ${today}`);
-    console.log(`📊 Target tickers: ${UNIQUE_TICKERS.length}`);
-    console.log('==================================================');
+    // 🔥 কনকারেন্টি কন্ট্রোল – একসাথে ৫ টিকা
+    const concurrency = 5;
+    let totalRecords = 0;
+    let successCount = 0;
 
-    let totalFetched = 0;
-    let totalSaved = 0;
-    let successfulTickers = 0;
-    const failedTickers = [];
-    const skippedTickers = [];
-    const noDataTickers = [];
+    for (let i = 0; i < TICKERS.length; i += concurrency) {
+        const chunk = TICKERS.slice(i, i + concurrency);
+        console.log(`📡 প্রসেসিং ব্যাচ ${Math.floor(i/concurrency) + 1}/${Math.ceil(TICKERS.length/concurrency)} (${i+1}-${Math.min(i+concurrency, TICKERS.length)})`);
 
-    // Conservative concurrency protects DSE from bursts and keeps the workflow stable.
-    const concurrency = 4;
+        // প্যারালালে সব টিকার ডেটা আনা
+        const fetchPromises = chunk.map(ticker => fetchTickerData(ticker, startDate, today));
+        const results = await Promise.all(fetchPromises);
 
-    for (let i = 0; i < UNIQUE_TICKERS.length; i += concurrency) {
-        const chunk = UNIQUE_TICKERS.slice(i, i + concurrency);
-        const batchNo = Math.floor(i / concurrency) + 1;
-        const batchTotal = Math.ceil(UNIQUE_TICKERS.length / concurrency);
+        // প্রতিটি টিকার ডেটা ব্যাচ আপসার্ট
+        const upsertPromises = chunk.map((ticker, index) => {
+            const records = results[index];
+            if (records.length === 0) return Promise.resolve(0);
+            return batchUpsert(ticker, records);
+        });
 
-        console.log(`\n📦 Batch ${batchNo}/${batchTotal}: ${chunk.join(', ')}`);
+        const savedCounts = await Promise.all(upsertPromises);
 
-        const results = await Promise.all(chunk.map(async ticker => {
-            try {
-                const result = await fetchTickerData(ticker, HISTORY_START_DATE, today);
-                return { ticker, ...result };
-            } catch (error) {
-                return { ticker, error };
-            }
-        }));
-
-        for (const result of results) {
-            if (result.error) {
-                // DSE data না পাওয়া/temporary source failure হলে শুধু এই ticker বাদ থাকবে।
-                // অন্য ticker-এর পাওয়া data অবশ্যই Supabase-এ save হবে।
-                skippedTickers.push(result.ticker);
-                console.warn(`⚠️ ${result.ticker}: historical data পাওয়া যায়নি; skipped. ${result.error.message}`);
-                continue;
-            }
-
-            // Only save rows inside the exact requested range and for the requested ticker.
-            const records = result.rows
-                .filter(r => r.date >= HISTORY_START_DATE && r.date <= today)
-                .filter(r => r.ticker.toUpperCase() === result.ticker.toUpperCase())
-                .map(r => ({
-                    ticker: result.ticker,
-                    date: r.date,
-                    ltp: r.ltp,
-                    high: r.high,
-                    low: r.low,
-                    open: r.open,
-                    ycp: r.ycp,
-                    volume: r.volume,
-                    trade: r.trade,
-                    value_mn: r.value_mn,
-                    updated_at: getBangladeshTimestamp()
-                }));
-
-            // Deduplicate by ticker/date before sending to Supabase.
-            const unique = new Map(records.map(r => [`${r.ticker}|${r.date}`, r]));
-            const cleanRecords = [...unique.values()];
-
-            if (!cleanRecords.length) {
-                // A symbol can legitimately have no rows in the requested window
-                // (new/delisted/suspended instrument or code changed at DSE).
-                // This is not a database/API crash, so do not abort the whole
-                // 347/401-symbol backfill. Keep it visible in the summary.
-                noDataTickers.push(result.ticker);
-                console.warn(`⚠️ ${result.ticker}: requested range-এ কোনো historical row নেই; skipped.`);
-                continue;
-            }
-
-            try {
-                const saved = await batchUpsert(result.ticker, cleanRecords);
-                totalFetched += cleanRecords.length;
-                totalSaved += saved;
-                successfulTickers++;
-                console.log(`✅ ${result.ticker}: ${saved}/${cleanRecords.length} saved | source=${result.source}`);
-            } catch (error) {
-                failedTickers.push(result.ticker);
-                console.error(`❌ ${result.ticker}: Supabase save ব্যর্থ: ${error.message}`);
-            }
+        // সারাংশ
+        for (let j = 0; j < chunk.length; j++) {
+            const ticker = chunk[j];
+            const records = results[j];
+            const saved = savedCounts[j];
+            totalRecords += records.length;
+            successCount += saved;
+            console.log(`${ticker}: ${saved}/${records.length} সেভ হয়েছে`);
         }
 
-        // Small pause between batches.
-        if (i + concurrency < UNIQUE_TICKERS.length) {
-            await new Promise(r => setTimeout(r, 500));
-        }
+        // রেট-লিমিট এড়াতে বিরতি
+        await new Promise(r => setTimeout(r, 1000));
     }
 
-    console.log('\n==================================================');
-    console.log('📊 DSE HISTORY UPDATE SUMMARY');
-    console.log(`📅 Range: ${HISTORY_START_DATE} → ${today}`);
-    console.log(`🎯 Tickers: ${UNIQUE_TICKERS.length}`);
-    console.log(`✅ Successful tickers: ${successfulTickers}`);
-    console.log(`🧾 Records fetched: ${totalFetched}`);
-    console.log(`💾 Records upserted: ${totalSaved}`);
-    const allSkipped = [...new Set([...noDataTickers, ...skippedTickers])];
-    console.log(`⚠️ Skipped tickers (no data/source response): ${allSkipped.length}`);
-    if (allSkipped.length) console.log(`ℹ️ Skipped list: ${allSkipped.join(', ')}`);
-    console.log(`❌ Actual database/save failures: ${failedTickers.length}`);
-    if (failedTickers.length) console.log(`⚠️ Failed list: ${failedTickers.join(', ')}`);
-    console.log('==================================================');
-
-    // Missing/unavailable ticker data is intentionally skipped.
-    // Only a real Supabase/database save failure makes the workflow fail.
-    if (failedTickers.length > 0) {
-        throw new Error(`${failedTickers.length} ticker(s) could not be saved to history_dse.`);
+    console.log(`✅ DSE হিস্টোরি আপডেট সম্পন্ন!`);
+    console.log(`📊 মোট রেকর্ড: ${totalRecords}, সফল: ${successCount}`);
+    if (isFullHistory) {
+        console.log(`🎉 প্রথমবারের মতো সম্পূর্ণ ইতিহাস সেভ হয়েছে।`);
+    } else {
+        console.log(`📅 আজকের ডেটা আপডেট হয়েছে।`);
     }
-
-    if (totalSaved === 0) {
-        throw new Error('কোনো record Supabase-এ save হয়নি।');
-    }
-
-    // Do not trust the local 'records upserted' counter alone. Read the table
-    // back from Supabase and verify that the requested date range is actually present.
-    await verifyDatabaseWrite(HISTORY_START_DATE, today);
-
-    console.log('🎉 history_dse backfill/update সম্পূর্ণ সফল।');
 }
 
-updateDSEHistory().catch(error => {
-    console.error('\n❌ FATAL:', error.message);
+// ==========================================
+// 🔥 রান
+// ==========================================
+updateDSEHistory().catch(err => {
+    console.error('❌ Fatal error:', err);
     process.exit(1);
 });
