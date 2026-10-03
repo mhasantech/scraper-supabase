@@ -48,7 +48,9 @@ async function main(){
      linearRegression20:linearRegression(close,20), calculatedFromDate:rows[0].date, calculatedToDate:rows.at(-1).date,
      calculationVersion:1
    };
-   const payload={indicators,last_updated:new Date().toISOString(),rsi:{value:indicators.rsi14,period:14,calculated_at:new Date().toISOString()},psar:indicators.psar};
+   const calculatedAt=new Date().toISOString();
+   // stock_metadata.rsi is a NUMERIC column; keep the rich RSI metadata inside indicators JSONB.
+   const payload={indicators,last_updated:calculatedAt,rsi:indicators.rsi14,psar:indicators.psar};
    try{
      const {data:existing,error:e1}=await supabase.from(META).select('ticker').eq('ticker',ticker).maybeSingle(); if(e1)throw e1;
      if(existing){const {error}=await supabase.from(META).update(payload).eq('ticker',ticker);if(error)throw error;} else {const {error}=await supabase.from(META).insert({ticker,...payload});if(error)throw error;}
