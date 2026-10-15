@@ -13,7 +13,7 @@ const { execFileSync } = require('child_process');
 // This avoids relying on undocumented/unstable JSON field names.
 // ============================================================
 
-const DSE_PAGE_URL = 'https://dse.com.bd/markets';
+const DSE_PAGE_URLS = ['https://new.dsebd.org/', 'https://old.dsebd.org/'];
 const TABLE_NAME = 'market_summary';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -98,7 +98,7 @@ function findBrowser() {
   return null;
 }
 
-function renderWithChromium() {
+function renderWithChromium(url) {
   const browser = findBrowser();
 
   if (!browser) {
@@ -122,7 +122,7 @@ function renderWithChromium() {
     '--virtual-time-budget=30000',
     '--run-all-compositor-stages-before-draw',
     '--dump-dom',
-    DSE_PAGE_URL,
+    url,
   ];
 
   const html = execFileSync(browser, args, {
@@ -138,10 +138,10 @@ function renderWithChromium() {
   return html;
 }
 
-async function fallbackHttpFetch() {
+async function fallbackHttpFetch(url) {
   console.log('⚠️ Browser render unavailable; trying direct DSE HTML as fallback...');
 
-  const response = await axios.get(DSE_PAGE_URL, {
+  const response = await axios.get(url, {
     httpsAgent,
     headers,
     timeout: 30000,
@@ -243,49 +243,59 @@ function parseDsex(html, text) {
 }
 
 function parseSummary(text) {
-  // DSE has changed the label/unit order more than once. Accept common variants,
-  // but never invent a missing value: a missing critical field remains a clear error.
-  const source = String(text || '').replace(/\s+/g, ' ');
-  const find = (patterns, label) => {
-    for (const re of patterns) {
-      const m = source.match(re);
-      if (m) {
-        const n = numberFrom(m[1]);
-        if (n !== null && Number.isFinite(n)) return n;
-      }
-    }
-    throw new Error(`${label} was not found in rendered DSE /markets page. Extracted text sample: ${source.slice(0, 900)}`);
+  const source = String(text || '');
+  const turnover = source.match(/TURNOVER\s+(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*mn/i)
+    || source.match(/Total Value in Taka\s*\(mn\)\s*([\d,]+(?:\.\d+)?)/i);
+  const volume = source.match(/VOLUME\s+([\d,]+)(?:\s+shares)?/i)
+    || source.match(/Total Volume\s*([\d,]+)/i);
+  const trades = source.match(/TRADES\s+([\d,]+)(?:\s+executions)?/i)
+    || source.match(/Total Trade\s*([\d,]+)/i);
+  const breadth = source.match(/BREADTH\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i)
+    || source.match(/Issues Advanced\s*(\d+)[\s\S]{0,120}?Issues declined\s*(\d+)[\s\S]{0,120}?Issues Unchanged\s*(\d+)/i);
+
+  if (!turnover) throw new Error('TURNOVER / Total Value was not found');
+  if (!volume) throw new Error('VOLUME / Total Volume was not found');
+  if (!trades) throw new Error('TRADES / Total Trade was not found');
+  if (!breadth) throw new Error('BREADTH / Issues Advanced-Declined-Unchanged was not found');
+
+  return {
+    total_value: numberFrom(turnover[1]),
+    total_volume: numberFrom(volume[1]),
+    total_trades: numberFrom(trades[1]),
+    advanced: numberFrom(breadth[1]),
+    declined: numberFrom(breadth[2]),
+    unchanged: numberFrom(breadth[3]),
   };
-  const total_value = find([
-    /TURNOVER\s*(?:\(\s*BDT\s*(?:mn|million)?\s*\))?\s*(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*(?:mn|million)?/i,
-    /(?:TOTAL\s*)?VALUE\s*(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*(?:mn|million)/i,
-    /TURNOVER[^\d]{0,100}([\d,]+(?:\.\d+)?)/i,
-  ], 'TURNOVER');
-  const total_volume = find([
-    /VOLUME\s*([\d,]+(?:\.\d+)?)\s*(?:shares?)?/i,
-    /TOTAL\s*VOLUME[^\d]{0,80}([\d,]+(?:\.\d+)?)/i,
-  ], 'VOLUME');
-  const total_trades = find([
-    /TRADES?\s*([\d,]+)\s*(?:executions?|transactions?)?/i,
-    /TOTAL\s*TRANSACTIONS?[^\d]{0,80}([\d,]+)/i,
-  ], 'TRADES');
-  let advanced, declined, unchanged;
-  const breadth = source.match(/BREADTH\s*(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i)
-    || source.match(/ADVANC(?:ED|ERS?)\s*[:\-]?\s*(\d+)[\s\S]{0,120}?DECLIN(?:ED|ERS?)\s*[:\-]?\s*(\d+)[\s\S]{0,120}?UNCHANGED\s*[:\-]?\s*(\d+)/i)
-    || source.match(/ADV\s*\/\s*DEC\s*\/\s*UNCH\s*(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i);
-  if (breadth) [advanced, declined, unchanged] = breadth.slice(1,4).map(Number);
-  else throw new Error(`BREADTH (advancers/decliners/unchanged) was not found in rendered DSE /markets page. Extracted text sample: ${source.slice(0, 900)}`);
-  return { total_value, total_volume, total_trades, advanced, declined, unchanged };
 }
 
 async function scrapeDse() {
   let html;
+  let selectedUrl = null;
+  let lastError = null;
 
-  try {
-    html = renderWithChromium();
-  } catch (browserError) {
-    console.log(`⚠️ Chromium render failed: ${browserError.message}`);
-    html = await fallbackHttpFetch();
+  // Preferred source order requested by the user: new DSE first, old DSE fallback.
+  for (const url of DSE_PAGE_URLS) {
+    try {
+      console.log(`🌐 Trying DSE source: ${url}`);
+      try {
+        html = renderWithChromium(url);
+      } catch (browserError) {
+        console.warn(`⚠️ Browser render failed for ${url}: ${browserError.message}`);
+        html = await fallbackHttpFetch(url);
+      }
+      const candidateText = marketSummaryText(html);
+      parseSummary(candidateText);
+      parseDsex(html, candidateText);
+      selectedUrl = url;
+      break;
+    } catch (err) {
+      lastError = err;
+      console.warn(`⚠️ Source did not provide complete market summary (${url}): ${err.message}`);
+    }
+  }
+
+  if (!selectedUrl || !html) {
+    throw new Error(`No DSE source provided complete market summary. Last error: ${lastError?.message || 'unknown'}`);
   }
 
   const text = marketSummaryText(html);
@@ -372,7 +382,7 @@ async function main() {
   console.log('📈 DSE MARKET SUMMARY SCRAPER');
   console.log('======================================');
   console.log(`🕐 ${new Date().toISOString()}`);
-  console.log(`🌐 Source: ${DSE_PAGE_URL}`);
+  console.log(`🌐 Sources (priority order): ${DSE_PAGE_URLS.join(" -> ")}`);
 
   const data = await scrapeDse();
 

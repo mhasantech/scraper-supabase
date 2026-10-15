@@ -10,7 +10,11 @@ const cheerio = require('cheerio');
 const https = require('https');
 const { getDhakaDate, numberFrom, upsert } = require('./lib/common');
 
-const DSE_RECENT_MARKET_URL = 'https://www.dse.com.bd/recent-market-information';
+const DSE_RECENT_MARKET_URLS = [
+  'https://new.dsebd.org/recent-market-information',
+  'https://old.dsebd.org/recent-market-information',
+  'https://www.dse.com.bd/recent-market-information',
+];
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const HEADERS = {
@@ -111,8 +115,8 @@ function makeIndexRows(marketRows) {
   return out;
 }
 
-async function fetchRecentMarketPage() {
-  const response = await axios.get(DSE_RECENT_MARKET_URL, {
+async function fetchRecentMarketPage(url) {
+  const response = await axios.get(url, {
     httpsAgent,
     headers: HEADERS,
     timeout: 30000,
@@ -128,9 +132,21 @@ async function fetchRecentMarketPage() {
 }
 
 async function scrapeDSEIndices() {
-  console.log(`🌐 Fetching: ${DSE_RECENT_MARKET_URL}`);
-  const html = await fetchRecentMarketPage();
-  const marketRows = parseRecentMarketRows(html);
+  let html = null;
+  let marketRows = null;
+  const errors = [];
+  for (const url of DSE_RECENT_MARKET_URLS) {
+    try {
+      console.log(`🌐 Trying DSE index source: ${url}`);
+      const candidateHtml = await fetchRecentMarketPage(url);
+      const candidateRows = parseRecentMarketRows(candidateHtml);
+      if (candidateRows.length) { html = candidateHtml; marketRows = candidateRows; break; }
+    } catch (err) {
+      errors.push(`${url}: ${err.message}`);
+      console.warn(`⚠️ DSE index source failed: ${url} — ${err.message}`);
+    }
+  }
+  if (!marketRows) throw new Error(`No DSE index table found on primary or fallback sources. ${errors.join(' | ')}`);
   const rows = makeIndexRows(marketRows);
 
   const dates = [...new Set(rows.map(row => row.date))];
