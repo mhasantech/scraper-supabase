@@ -67,7 +67,7 @@ function parseRenderedRows(html) {
 }
 
 async function scrapeDSELatestPrices() {
-  const html = renderPage(DSE_URL, 18000);
+  const html = renderPage(DSE_URL, 30000);
   const records = parseRenderedRows(html);
   console.log(`📊 DSE rendered rows: ${records.length}`);
   if (records.length < 50) {

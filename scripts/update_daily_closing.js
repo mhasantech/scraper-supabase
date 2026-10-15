@@ -5,7 +5,7 @@ const https = require('https');
 // ==========================================
 // 📌 Supabase কনফিগারেশন
 // ==========================================
-const SUPABASE_URL = 'https://dpdicusxlrdydajkcgev.supabase.co';
+const SUPABASE_URL = (process.env.SUPABASE_URL || 'https://dpdicusxlrdydajkcgev.supabase.co').replace(/\/$/, '');
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 if (!SUPABASE_SERVICE_KEY) {
@@ -33,7 +33,7 @@ async function upsertToSupabase(table, record) {
             httpsAgent: agent,
             timeout: 15000
         });
-        if (response.status === 201 || response.status === 200) {
+        if ([200, 201, 202, 204].includes(response.status)) {
             return true;
         }
         return false;
@@ -51,7 +51,9 @@ async function upsertToSupabase(table, record) {
 // 📡 CSE-র দৈনিক ক্লোজিং ডেটা আপডেট
 // ==========================================
 async function updateDailyClosing() {
-    const today = new Date().toISOString().split('T')[0];
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const dateParts = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, x.value]));
+    const today = `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
     console.log(`📅 CSE দৈনিক ক্লোজিং আপডেট: ${today}`);
 
     try {
@@ -117,12 +119,12 @@ async function updateDailyClosing() {
         }
 
         console.log(`✅ দৈনিক ক্লোজিং আপডেট সম্পন্ন! সফল: ${success}, ব্যর্থ: ${errors}`);
+        if (errors > 0) throw new Error(`${errors} daily closing upserts failed.`);
 
     } catch (err) {
         console.error('❌ দৈনিক ক্লোজিং আপডেট ব্যর্থ:', err.message);
-        if (err.response) {
-            console.error('📄 রেসপন্স স্ট্যাটাস:', err.response.status);
-        }
+        if (err.response) console.error('📄 রেসপন্স স্ট্যাটাস:', err.response.status);
+        throw err;
     }
 }
 

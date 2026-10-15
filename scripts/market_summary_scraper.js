@@ -119,7 +119,7 @@ function renderWithChromium() {
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=1440,2200',
-    '--virtual-time-budget=15000',
+    '--virtual-time-budget=30000',
     '--run-all-compositor-stages-before-draw',
     '--dump-dom',
     DSE_PAGE_URL,
@@ -127,8 +127,8 @@ function renderWithChromium() {
 
   const html = execFileSync(browser, args, {
     encoding: 'utf8',
-    timeout: 60000,
-    maxBuffer: 30 * 1024 * 1024,
+    timeout: 120000,
+    maxBuffer: 50 * 1024 * 1024,
   });
 
   if (!html || html.length < 1000) {
@@ -158,18 +158,9 @@ async function fallbackHttpFetch() {
 }
 
 function marketSummaryText(html) {
-  const body = cleanText(html);
-  const marker = body.search(/Market Summary/i);
-
-  if (marker >= 0) {
-    // Keep enough room for all cards but stop before the next major section.
-    const tail = body.slice(marker, marker + 5000);
-    const stop = tail.search(/Category-wise Issues Summary|Category-wise|TOTAL TRANSACTIONS/i);
-
-    return stop > 0 ? tail.slice(0, stop) : tail;
-  }
-
-  return body;
+  // Parse the complete rendered page text. The old implementation truncated
+  // after a guessed section heading, which could cut off TURNOVER/VOLUME/TRADES.
+  return cleanText(html);
 }
 
 function findCardContext(html, label) {
@@ -252,36 +243,39 @@ function parseDsex(html, text) {
 }
 
 function parseSummary(text) {
-  // These labels are visible on DSE's current Market Summary page.
-  const turnover = text.match(
-    /TURNOVER\s+BDT\s*([\d,]+(?:\.\d+)?)\s*mn/i
-  );
-
-  const volume = text.match(
-    /VOLUME\s+([\d,]+)\s+shares/i
-  );
-
-  const trades = text.match(
-    /TRADES\s+([\d,]+)\s+executions/i
-  );
-
-  const breadth = text.match(
-    /BREADTH\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i
-  );
-
-  if (!turnover) throw new Error('TURNOVER was not found on DSE /markets');
-  if (!volume) throw new Error('VOLUME was not found on DSE /markets');
-  if (!trades) throw new Error('TRADES was not found on DSE /markets');
-  if (!breadth) throw new Error('BREADTH was not found on DSE /markets');
-
-  return {
-    total_value: numberFrom(turnover[1]),
-    total_volume: numberFrom(volume[1]),
-    total_trades: numberFrom(trades[1]),
-    advanced: numberFrom(breadth[1]),
-    declined: numberFrom(breadth[2]),
-    unchanged: numberFrom(breadth[3]),
+  // DSE has changed the label/unit order more than once. Accept common variants,
+  // but never invent a missing value: a missing critical field remains a clear error.
+  const source = String(text || '').replace(/\s+/g, ' ');
+  const find = (patterns, label) => {
+    for (const re of patterns) {
+      const m = source.match(re);
+      if (m) {
+        const n = numberFrom(m[1]);
+        if (n !== null && Number.isFinite(n)) return n;
+      }
+    }
+    throw new Error(`${label} was not found in rendered DSE /markets page. Extracted text sample: ${source.slice(0, 900)}`);
   };
+  const total_value = find([
+    /TURNOVER\s*(?:\(\s*BDT\s*(?:mn|million)?\s*\))?\s*(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*(?:mn|million)?/i,
+    /(?:TOTAL\s*)?VALUE\s*(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*(?:mn|million)/i,
+    /TURNOVER[^\d]{0,100}([\d,]+(?:\.\d+)?)/i,
+  ], 'TURNOVER');
+  const total_volume = find([
+    /VOLUME\s*([\d,]+(?:\.\d+)?)\s*(?:shares?)?/i,
+    /TOTAL\s*VOLUME[^\d]{0,80}([\d,]+(?:\.\d+)?)/i,
+  ], 'VOLUME');
+  const total_trades = find([
+    /TRADES?\s*([\d,]+)\s*(?:executions?|transactions?)?/i,
+    /TOTAL\s*TRANSACTIONS?[^\d]{0,80}([\d,]+)/i,
+  ], 'TRADES');
+  let advanced, declined, unchanged;
+  const breadth = source.match(/BREADTH\s*(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i)
+    || source.match(/ADVANC(?:ED|ERS?)\s*[:\-]?\s*(\d+)[\s\S]{0,120}?DECLIN(?:ED|ERS?)\s*[:\-]?\s*(\d+)[\s\S]{0,120}?UNCHANGED\s*[:\-]?\s*(\d+)/i)
+    || source.match(/ADV\s*\/\s*DEC\s*\/\s*UNCH\s*(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i);
+  if (breadth) [advanced, declined, unchanged] = breadth.slice(1,4).map(Number);
+  else throw new Error(`BREADTH (advancers/decliners/unchanged) was not found in rendered DSE /markets page. Extracted text sample: ${source.slice(0, 900)}`);
+  return { total_value, total_volume, total_trades, advanced, declined, unchanged };
 }
 
 async function scrapeDse() {
@@ -330,6 +324,22 @@ async function scrapeDse() {
   return data;
 }
 
+async function withRetry(label, fn, attempts = 3) {
+  let last;
+  for (let i = 1; i <= attempts; i++) {
+    try { return await fn(); } catch (err) {
+      last = err;
+      const status = err.response?.status;
+      const retryable = !status || status === 408 || status === 425 || status === 429 || status >= 500;
+      if (!retryable || i === attempts) break;
+      const wait = i * 1200;
+      console.warn(`⚠️ ${label} attempt ${i}/${attempts} failed; retrying in ${wait}ms`);
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+  }
+  throw last;
+}
+
 async function saveToSupabase(data) {
   const base = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${TABLE_NAME}`;
   const date = encodeURIComponent(data.market_date);
@@ -337,26 +347,21 @@ async function saveToSupabase(data) {
   console.log(`💾 Saving market summary for ${data.market_date}...`);
   console.log(`🔗 Supabase host: ${new URL(SUPABASE_URL).host}`);
 
-  const existing = await axios.get(
+  const existing = await withRetry('Supabase market_summary lookup', () => axios.get(
     `${base}?market_date=eq.${date}&select=id`,
-    {
-      headers: supabaseHeaders,
-      timeout: 15000,
-    }
-  );
+    { headers: supabaseHeaders, timeout: 30000 }
+  ));
 
   if (existing.data?.length) {
-    await axios.patch(`${base}?market_date=eq.${date}`, data, {
-      headers: { ...supabaseHeaders, Prefer: 'return=minimal' },
-      timeout: 15000,
-    });
+    await withRetry('Supabase market_summary update', () => axios.patch(`${base}?market_date=eq.${date}`, data, {
+      headers: { ...supabaseHeaders, Prefer: 'return=minimal' }, timeout: 30000
+    }));
 
     console.log('✅ Existing market summary updated');
   } else {
-    await axios.post(base, data, {
-      headers: { ...supabaseHeaders, Prefer: 'return=minimal' },
-      timeout: 15000,
-    });
+    await withRetry('Supabase market_summary insert', () => axios.post(base, data, {
+      headers: { ...supabaseHeaders, Prefer: 'return=minimal' }, timeout: 30000
+    }));
 
     console.log('✅ New market summary inserted');
   }
