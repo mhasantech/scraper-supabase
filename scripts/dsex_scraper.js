@@ -11,6 +11,9 @@ const https = require('https');
 const { getDhakaDate, numberFrom, upsert } = require('./lib/common');
 
 const DSE_RECENT_MARKET_URLS = [
+  // User-confirmed legacy page: this is the source to try first.
+  'https://old.dsebd.org/recent_market_information.php',
+  'https://old.dsebd.org/recent-market-information.php',
   'https://new.dsebd.org/recent-market-information',
   'https://old.dsebd.org/recent-market-information',
   'https://www.dse.com.bd/recent-market-information',
@@ -38,47 +41,79 @@ function parseNumber(value) {
   return numberFrom(String(value).replace(/,/g, ''));
 }
 
+function expandTableRows($, table) {
+  // Expand colspan/rowspan so multi-level legacy DSE table headers line up
+  // with the data cells. This matters because index columns sit under grouped
+  // market-capitalization headings on the legacy page.
+  const grid = [];
+  const rows = $(table).find('tr').toArray();
+  rows.forEach((row, r) => {
+    grid[r] = grid[r] || [];
+    let c = 0;
+    $(row).find('th,td').toArray().forEach(cell => {
+      while (grid[r][c] !== undefined) c++;
+      const text = $(cell).text().replace(/\s+/g, ' ').trim();
+      const colspan = Math.max(1, Number($(cell).attr('colspan')) || 1);
+      const rowspan = Math.max(1, Number($(cell).attr('rowspan')) || 1);
+      for (let rr = r; rr < r + rowspan; rr++) {
+        grid[rr] = grid[rr] || [];
+        for (let cc = c; cc < c + colspan; cc++) {
+          if (grid[rr][cc] === undefined) grid[rr][cc] = text;
+        }
+      }
+      c += colspan;
+    });
+  });
+  return grid.map(row => row || []);
+}
+
 function parseRecentMarketRows(html) {
   const $ = cheerio.load(html);
   const tables = $('table').toArray();
   const candidates = [];
 
   for (const table of tables) {
-    const rows = $(table).find('tr').toArray();
-    if (rows.length < 2) continue;
+    const grid = expandTableRows($, table);
+    if (grid.length < 2) continue;
 
-    const headerCells = $(rows[0]).find('th,td').toArray();
-    const headers = headerCells.map(cell => normalizeHeader($(cell).text()));
-
-    const dateIndex = headers.findIndex(h => h === 'date');
-    const dsexIndex = headers.findIndex(h => h === 'dsex');
-    const dsesIndex = headers.findIndex(h => h === 'dses');
-    const ds30Index = headers.findIndex(h => h === 'ds30');
-
-    if (dateIndex < 0 || dsexIndex < 0 || dsesIndex < 0 || ds30Index < 0) continue;
+    // Inspect the first several rows as a combined header. Legacy DSE uses
+    // grouped headers, so the header labels can span multiple rows.
+    const headerEnd = Math.min(5, grid.length - 1);
+    const width = Math.max(...grid.slice(0, headerEnd).map(r => r.length), 0);
+    const headers = [];
+    for (let c = 0; c < width; c++) {
+      headers[c] = normalizeHeader(grid.slice(0, headerEnd).map(r => r[c] || '').join(' '));
+    }
+    const dateIndex = headers.findIndex(h => h.includes('date'));
+    const dsexIndex = headers.findIndex(h => h.includes('dsex'));
+    const dsesIndex = headers.findIndex(h => h.includes('dses'));
+    const ds30Index = headers.findIndex(h => h.includes('ds30'));
+    if ([dateIndex, dsexIndex, dsesIndex, ds30Index].some(i => i < 0)) continue;
 
     const parsed = [];
-    for (const row of rows.slice(1)) {
-      const cells = $(row).find('td,th').toArray().map(cell => $(cell).text().trim());
+    for (const cells of grid.slice(headerEnd)) {
       if (cells.length <= Math.max(dateIndex, dsexIndex, dsesIndex, ds30Index)) continue;
-
       const date = parseDate(cells[dateIndex]);
       const dsex = parseNumber(cells[dsexIndex]);
       const dses = parseNumber(cells[dsesIndex]);
       const ds30 = parseNumber(cells[ds30Index]);
       if (!date || dsex === null || dses === null || ds30 === null) continue;
-
       parsed.push({ date, DSEX: dsex, DSES: dses, DS30: ds30 });
     }
-
     if (parsed.length) candidates.push(parsed);
   }
 
   if (!candidates.length) {
-    throw new Error('DSE Recent Market Information table not found or returned no index rows.');
+    // Helpful, bounded diagnostics: the failure log will reveal table headings
+    // instead of dumping the full page or failing without context.
+    const $ = cheerio.load(html);
+    const preview = $('table').toArray().slice(0, 8).map((t, i) =>
+      `table${i + 1}: ${$(t).find('tr').first().text().replace(/\s+/g, ' ').trim().slice(0, 180)}`
+    ).join(' | ');
+    throw new Error(`DSE Recent Market Information table with Date/DSEX/DSES/DS30 rows not found. ${preview}`);
   }
 
-  // Prefer the candidate with the most rows.
+  // The Recent Market Information table contains the most daily rows.
   return candidates.sort((a, b) => b.length - a.length)[0]
     .sort((a, b) => a.date.localeCompare(b.date));
 }
