@@ -2,6 +2,11 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const https = require('https');
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const {
+  htmlToLegacyText, parsePageDate, parseLegacyDsex, parseLegacySummary,
+} = require('./lib/dse_legacy');
 
 // ============================================================
 // StockPulse - DSE Market Summary Scraper
@@ -17,6 +22,14 @@ const { execFileSync } = require('child_process');
 // Try the legacy site first; if its page/data is incomplete, fall back to the
 // current DSE site shown in the user's screenshots.
 const DSE_PAGE_URLS = ['https://old.dsebd.org/', 'https://new.dsebd.org/'];
+// old.dsebd.org is server-rendered HTML, so a plain HTTP request is tried first (fast,
+// stable, no browser noise). Chromium is the backup for it. new.dsebd.org is rendered by
+// JavaScript, so Chromium comes first there.
+const SOURCE_STRATEGIES = {
+  'old.dsebd.org': ['http', 'browser'],
+  'new.dsebd.org': ['browser', 'http'],
+};
+const DEBUG_DIR = 'debug';
 const TABLE_NAME = 'market_summary';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -119,6 +132,11 @@ function renderWithChromium(url) {
     '--disable-dev-shm-usage',
     '--disable-software-rasterizer',
     '--disable-background-networking',
+    '--disable-extensions',
+    '--disable-sync',
+    '--disable-component-update',
+    '--mute-audio',
+    '--log-level=3',
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=1440,2200',
@@ -128,10 +146,13 @@ function renderWithChromium(url) {
     url,
   ];
 
+  // stderr is ignored on purpose: headless Chrome on GitHub runners prints harmless
+  // dbus / GCM "ERROR" lines that only clutter the log.
   const html = execFileSync(browser, args, {
     encoding: 'utf8',
     timeout: 120000,
     maxBuffer: 50 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
   });
 
   if (!html || html.length < 1000) {
@@ -255,6 +276,17 @@ function signedNumber(value) {
 }
 
 function parseDsex(html, text) {
+  // Legacy page (old.dsebd.org): label, index value, point change and percent come from the
+  // dedicated tolerant parser (see scripts/lib/dse_legacy.js).
+  let legacyError = null;
+  try {
+    const legacy = parseLegacyDsex(html);
+    console.log(`🧩 Parsed legacy DSEX row (${legacy.mode}): value=${legacy.dsex}, change=${legacy.change}, percent=${legacy.change_percent}, sign=${legacy.direction || 'unproven'}`);
+    return legacy;
+  } catch (err) {
+    legacyError = err;
+  }
+
   const sourceText = String(text || '').replace(/\s+/g, ' ').trim();
   const rows = legacyTableRows(html);
 
@@ -324,10 +356,16 @@ function parseDsex(html, text) {
       }
     }
   }
-  throw new Error('DSEX value/change was not found in the legacy DSEX Index table or current DSE summary card');
+  throw new Error(`DSEX value/change was not found in the legacy DSEX Index table or current DSE summary card (${legacyError ? legacyError.message : 'no detail'})`);
 }
 
 function parseSummary(text, html = '') {
+  try {
+    return parseLegacySummary(html);
+  } catch (_) {
+    // not the legacy layout: continue with the current-site / generic parsers below
+  }
+
   const source = String(text || '').replace(/\s+/g, ' ').trim();
   const rows = legacyTableRows(html);
   let activityValues = null;
@@ -397,68 +435,99 @@ function parseSummary(text, html = '') {
   };
 }
 
+function saveDebug(label, html) {
+  try {
+    if (!html) return;
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    const file = path.join(DEBUG_DIR, `${label.replace(/[^a-z0-9.]+/gi, '_')}.html`);
+    fs.writeFileSync(file, String(html).slice(0, 3 * 1024 * 1024));
+    console.log(`🧪 Saved debug copy of the page: ${file}`);
+  } catch (err) {
+    console.warn(`⚠️ Could not save debug page: ${err.message}`);
+  }
+}
+
 async function scrapeDse() {
-  let html;
-  let selectedUrl = null;
-  let lastError = null;
+  let picked = null;
+  const failures = [];
 
-  // Preferred source order: legacy DSE first, current DSE as fallback.
+  // Source order: old DSE first, new DSE only as fallback.
   for (const url of DSE_PAGE_URLS) {
-    try {
-      console.log(`🌐 Trying DSE source: ${url}`);
-      html = await renderDseDocuments(url);
-      const candidateText = marketSummaryText(html);
-      const candidateSummary = parseSummary(candidateText, html);
-      parseDsex(html, candidateText);
-      // Require the three core activity values from a source before selecting it.
-      // Breadth's unchanged count is optional because the new DSE page omits it.
-      if (!(candidateSummary.total_value >= 0) ||
-          !(candidateSummary.total_volume >= 0) ||
-          !(candidateSummary.total_trades >= 0)) {
-        throw new Error('Source is missing one or more core market activity values');
+    const host = new URL(url).hostname;
+    const strategies = SOURCE_STRATEGIES[host] || ['browser', 'http'];
+
+    for (const strategy of strategies) {
+      const label = `${host} via ${strategy}`;
+      let html = '';
+      try {
+        console.log(`🌐 Trying DSE source: ${url} (${strategy})`);
+        html = strategy === 'http'
+          ? await withRetry(`HTTP ${host}`, () => fallbackHttpFetch(url), 2)
+          : await renderDseDocuments(url);
+
+        const text = marketSummaryText(html);
+        const summary = parseSummary(text, html);
+        const dsex = parseDsex(html, text);
+
+        // The three core activity values are required; "unchanged" is optional (new DSE omits it).
+        if (!(summary.total_value >= 0) || !(summary.total_volume >= 0) || !(summary.total_trades >= 0)) {
+          throw new Error('Source is missing one or more core market activity values');
+        }
+        picked = { url, host, strategy, html, text, summary, dsex };
+        break;
+      } catch (err) {
+        failures.push(`${label}: ${err.message}`);
+        console.warn(`⚠️ Source did not provide complete market summary (${label}): ${err.message}`);
+        saveDebug(label, html);
       }
-      selectedUrl = url;
-      break;
-    } catch (err) {
-      lastError = err;
-      console.warn(`⚠️ Source did not provide complete market summary (${url}): ${err.message}`);
     }
+    if (picked) break;
   }
 
-  if (!selectedUrl || !html) {
-    throw new Error(`No DSE source provided complete market summary. Last error: ${lastError?.message || 'unknown'}`);
+  if (!picked) {
+    throw new Error(`No DSE source provided complete market summary. ${failures.join(' | ')}`);
   }
 
-  const text = marketSummaryText(html);
+  const { url: selectedUrl, strategy, html, text, summary, dsex } = picked;
+  console.log(`✅ Selected DSE source: ${selectedUrl} (${strategy})`);
+  console.log(`📄 Page size: ${html.length} bytes`);
+  console.log(`📊 Market Summary text: ${htmlToLegacyText(html).slice(0, 600)}`);
 
-  console.log(`✅ Selected DSE source: ${selectedUrl}`);
-  console.log(`📄 Rendered DSE DOM: ${html.length} bytes`);
-  console.log(`📊 Market Summary text: ${text.slice(0, 1200)}`);
+  // Use the date printed on the page ("Last update on Oct 15, 2026 ...") so a run on a
+  // Friday/Saturday/holiday stores the real trading day instead of creating a row for today.
+  const pageDate = parsePageDate(htmlToLegacyText(html)) || parsePageDate(text);
+  const marketDate = pageDate || getDhakaDate();
+  console.log(`📅 Market date: ${marketDate} (${pageDate ? 'from the DSE page' : 'Dhaka calendar date; page date not found'})`);
 
-  const dsex = parseDsex(html, text);
-  const summary = parseSummary(text, html);
-  const marketDate = getDhakaDate();
-
-  // If the source reports 0.00% (common when the market is closed or its
-  // summary card omits the daily movement), use the previous stored market
-  // day's DSEX to calculate the absolute and percentage change.
+  // The change is already provided by the legacy page. Only when a source reports 0.00%
+  // (market closed / card without movement) or when the sign could not be proven from the
+  // page, use the previous stored market day to work out the direction/change.
   let calculatedChange = dsex.change;
   let calculatedPercent = dsex.change_percent;
   let previousClose = dsex.dsex - dsex.change;
-  if (Math.abs(calculatedPercent) < 0.0000001) {
+  const zeroMove = Math.abs(calculatedPercent) < 0.0000001;
+  const unsignedMove = dsex.direction === null && !zeroMove;
+
+  if (zeroMove || unsignedMove) {
     try {
-      const previous = await axios.get(
+      const previous = await withRetry('Supabase previous DSEX lookup', () => axios.get(
         `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${TABLE_NAME}?market_date=lt.${encodeURIComponent(marketDate)}&select=market_date,dsex&order=market_date.desc&limit=1`,
         { headers: supabaseHeaders, timeout: 30000 }
-      );
+      ));
       const previousDsex = numberFrom(previous.data?.[0]?.dsex);
-      if (previousDsex > 0) {
+      if (previousDsex > 0 && zeroMove) {
         previousClose = previousDsex;
         calculatedChange = Number((dsex.dsex - previousDsex).toFixed(5));
         calculatedPercent = Number(((calculatedChange / previousDsex) * 100).toFixed(5));
         console.log(`📚 DSEX change calculated against previous stored market date ${previous.data[0].market_date}: ${previousDsex}`);
+      } else if (previousDsex > 0 && unsignedMove) {
+        const sign = dsex.dsex >= previousDsex ? 1 : -1;
+        calculatedChange = sign * Math.abs(dsex.change);
+        calculatedPercent = sign * Math.abs(dsex.change_percent);
+        previousClose = dsex.dsex - calculatedChange;
+        console.log(`📚 DSEX direction (${sign > 0 ? 'up' : 'down'}) confirmed against previous stored market date ${previous.data[0].market_date}: ${previousDsex}`);
       } else {
-        console.warn('⚠️ No prior DSEX value found; retaining source change of 0.00');
+        console.warn('⚠️ No prior DSEX value found; keeping the change reported by the source');
       }
     } catch (err) {
       console.warn(`⚠️ Could not read prior DSEX for change calculation: ${err.message}`);
@@ -578,4 +647,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseDsex, parseSummary, marketSummaryText, cleanText, numberFrom };
+module.exports = { parseDsex, parseSummary, marketSummaryText, cleanText, numberFrom, scrapeDse };
