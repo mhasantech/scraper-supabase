@@ -31,7 +31,11 @@ function getRowValue($, label) {
     const cells = $(tr).find('th,td');
     if (cells.length < 2) return;
     const key = cleanText($(cells[0]).text()).toLowerCase();
-    if (key.includes(label.toLowerCase())) found = cleanText($(cells.slice(1).text()));
+    if (key.includes(label.toLowerCase())) {
+      // Do not pass dividend text to $() as a selector; strings like '% 2022'
+      // are invalid CSS selectors and caused every ticker to fail.
+      found = cleanText(cells.slice(1).map((_, cell) => $(cell).text()).get().join(' '));
+    }
   });
   return found;
 }
