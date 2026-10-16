@@ -1,4 +1,4 @@
-name: Market Scraper (CSE + DSE + DSEX + Daily Closing)
+name: Market Scraper (CSE + DSE + DSEX)
 
 on:
   schedule:
@@ -6,9 +6,11 @@ on:
     - cron: '*/15 3-11 * * 0-4'
     # UTC ১২:০০ তে একবার (বাংলাদেশ বিকাল ৬টা) – শেষ দামটি ধরা
     - cron: '0 12 * * 0-4'
-    # ডেইলি ক্লোজিং আপডেট – UTC ১০:৩০ (বাংলাদেশ ৪:৩০ PM) – আগের মতো
-    - cron: '30 10 * * 0-4'
   workflow_dispatch: # ম্যানুয়াল রান (যেকোনো সময় করবেন)
+
+concurrency:
+  group: stockpulse-market-scrape-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   scrape:
@@ -44,10 +46,18 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/dsex_scraper.js
 
+      - name: Upload page copies if a scraper failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-debug
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 3
+
   daily-closing:
     runs-on: ubuntu-latest
-    needs: scrape
-    if: github.event.schedule == '30 10 * * 0-4' || github.event_name == 'workflow_dispatch'
+    if: always() && (github.event_name == 'workflow_dispatch')
     timeout-minutes: 10
 
     steps:

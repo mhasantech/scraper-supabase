@@ -15,10 +15,14 @@ on:
           - daily
           - full
 
+concurrency:
+  group: stockpulse-user-backup-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 

@@ -2,14 +2,19 @@ name: DSE Market Summary
 
 on:
   schedule:
-    - cron: '*/15 3-11 * * 0-4'
+    # Run every 30 minutes during market hours and once after close (UTC).
+    - cron: '0,30 3-11 * * 0-4'
     - cron: '0 12 * * 0-4'
   workflow_dispatch:
+
+concurrency:
+  group: stockpulse-market-summary-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   market-summary:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -28,3 +33,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/market_summary_scraper.js
+
+      - name: Upload page copies if the scraper failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-summary-debug
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 3

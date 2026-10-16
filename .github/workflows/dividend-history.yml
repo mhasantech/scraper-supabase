@@ -1,0 +1,34 @@
+name: StockPulse DSE Dividend History
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Optional comma-separated ticker list (e.g. AAMRANET,ACIFORMULA). Leave blank for all DSE tickers."
+        required: false
+        type: string
+  schedule:
+    # Daily at 18:30 Bangladesh time, Sunday-Thursday (UTC 12:30)
+    - cron: '30 12 * * 0-4'
+
+concurrency:
+  group: stockpulse-dividend-history-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scrape-dividends:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - name: Scrape dividend history from DSE legacy company pages
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DIVIDEND_TICKERS: ${{ github.event.inputs.tickers }}
+          DIVIDEND_SCRAPE_DELAY_MS: '350'
+        run: node scripts/dse_dividend_history_scraper.js
