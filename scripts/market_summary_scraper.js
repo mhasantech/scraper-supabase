@@ -141,6 +141,60 @@ function renderWithChromium(url) {
   return html;
 }
 
+function sameHostFrameUrls(html, pageUrl) {
+  const $ = cheerio.load(html || '');
+  const base = new URL(pageUrl);
+  const urls = [];
+  $('iframe[src], frame[src]').each((_, frame) => {
+    const src = String($(frame).attr('src') || '').trim();
+    if (!src || src.startsWith('javascript:') || src.startsWith('data:') || src === 'about:blank') return;
+    try {
+      const resolved = new URL(src, base);
+      if (resolved.protocol.startsWith('http') && resolved.hostname === base.hostname && !urls.includes(resolved.href)) {
+        urls.push(resolved.href);
+      }
+    } catch (_) {}
+  });
+  return urls.slice(0, 4);
+}
+
+async function renderDseDocuments(url) {
+  // Legacy DSE has used frames/iframes for parts of its market tables. Chrome's
+  // --dump-dom only dumps the top document, not each frame's document, so also
+  // render same-host frames as top-level pages and combine their DOMs.
+  let mainHtml;
+  try {
+    mainHtml = renderWithChromium(url);
+  } catch (browserError) {
+    console.warn(`⚠️ Browser render failed for ${url}: ${browserError.message}`);
+    mainHtml = await fallbackHttpFetch(url);
+  }
+
+  const documents = [mainHtml];
+  const frameUrls = sameHostFrameUrls(mainHtml, url);
+  for (const frameUrl of frameUrls) {
+    try {
+      console.log(`🪟 Checking legacy DSE frame: ${frameUrl}`);
+      let frameHtml;
+      try {
+        frameHtml = renderWithChromium(frameUrl);
+      } catch (browserError) {
+        console.warn(`⚠️ Frame browser render failed (${frameUrl}): ${browserError.message}`);
+        frameHtml = await fallbackHttpFetch(frameUrl);
+      }
+      if (frameHtml && frameHtml.length > 1000) documents.push(frameHtml);
+    } catch (err) {
+      console.warn(`⚠️ Could not read DSE frame ${frameUrl}: ${err.message}`);
+    }
+  }
+
+  // Keep table markup from every document available to Cheerio parsers.
+  return documents.map(doc => {
+    const $doc = cheerio.load(doc);
+    return $doc('body').html() || doc;
+  }).join('\n<!-- STOCKPULSE DSE FRAME -->\n');
+}
+
 async function fallbackHttpFetch(url) {
   console.log('⚠️ Browser render unavailable; trying direct DSE HTML as fallback...');
 
@@ -208,14 +262,34 @@ function parseDsex(html, text) {
   // index value, point change and percentage in separate cells, so flattening
   // all HTML into one string is fragile (icons and nested spans break regexes).
   for (const cells of rows) {
-    const label = cleanText(cells[0]).replace(/\s+/g, ' ').trim();
-    if (!/^DSEX\s*Index$/i.test(label)) continue;
-    const nums = numericCells(cells.slice(1)).filter(Boolean);
+    // Old DSE sometimes wraps table cells in nested tables. In that case the
+    // label is not necessarily cells[0], so locate it anywhere in the row.
+    const labelIndex = cells.findIndex(cell =>
+      /^DSEX\s*Index$/i.test(cleanText(cell).replace(/\s+/g, ' ').trim())
+    );
+    if (labelIndex < 0) continue;
+
+    const nums = numericCells(cells.slice(labelIndex + 1)).filter(Boolean);
     if (nums.length >= 3) {
       const dsex = numberFrom(nums[0]);
       const change = signedNumber(nums[1]);
       const changePercent = signedNumber(nums[2].replace(/%/g, ''));
       if (dsex > 0 && change != null && changePercent != null) {
+        console.log(`🧩 Parsed legacy DSEX row: value=${dsex}, change=${change}, percent=${changePercent}`);
+        return { dsex, change, change_percent: changePercent };
+      }
+    }
+
+    // Some legacy layouts place the label and one or more values in the same
+    // cell or expose nested cells in an unusual order. Parse the row text too.
+    const rowText = cleanText(cells.join(' ')).replace(/\u2212/g, '-');
+    const rowMatch = rowText.match(/DSEX\s*Index\s*([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i);
+    if (rowMatch) {
+      const dsex = numberFrom(rowMatch[1]);
+      const change = signedNumber(rowMatch[2]);
+      const changePercent = signedNumber(rowMatch[3]);
+      if (dsex > 0 && change != null && changePercent != null) {
+        console.log(`🧩 Parsed legacy DSEX row text: value=${dsex}, change=${change}, percent=${changePercent}`);
         return { dsex, change, change_percent: changePercent };
       }
     }
@@ -223,7 +297,7 @@ function parseDsex(html, text) {
 
   // Flattened legacy-table fallback for pages whose table markup is unusual.
   const oldTable = sourceText.match(
-    /DSEX\s+Index\s+([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i
+    /DSEX\s*Index\s*([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i
   );
   if (oldTable) {
     return {
@@ -332,12 +406,7 @@ async function scrapeDse() {
   for (const url of DSE_PAGE_URLS) {
     try {
       console.log(`🌐 Trying DSE source: ${url}`);
-      try {
-        html = renderWithChromium(url);
-      } catch (browserError) {
-        console.warn(`⚠️ Browser render failed for ${url}: ${browserError.message}`);
-        html = await fallbackHttpFetch(url);
-      }
+      html = await renderDseDocuments(url);
       const candidateText = marketSummaryText(html);
       const candidateSummary = parseSummary(candidateText, html);
       parseDsex(html, candidateText);
