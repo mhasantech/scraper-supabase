@@ -17,7 +17,8 @@
     "backup:firebase": "node scripts/backup_supabase_to_firebase.js",
     "cleanup:firebase-market-backups": "node scripts/cleanup_legacy_market_backups.js",
     "test:dse-legacy": "node scripts/test_dse_legacy.js",
-    "test:dsex": "node scripts/test_dsex_recent.js"
+    "test:dsex": "node scripts/test_dsex_recent.js",
+    "dividend-history": "node scripts/dse_dividend_history_scraper.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

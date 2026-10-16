@@ -115,3 +115,15 @@ node scripts/update_dse_history.js
 ## Daily closing fundamentals
 
 `scripts/update_daily_closing.js` adds `eps`, `pe_ratio`, `dividend`, `record_date` and `category` from the latest `cse_market_data` day to today's `daily_closing_prices` rows. DSE prices written by `dse_scraper.js` are never overwritten.
+
+
+## DSE historical dividend scraper
+
+The `scripts/dse_dividend_history_scraper.js` job reads each ticker's legacy DSE company page
+(`https://old.dsebd.org/displayCompany.php?name=TICKER`) and upserts historical cash/stock
+dividend percentages into `public.dse_dividend_data`. Run `supabase_dse_dividend_data.sql`
+once in Supabase SQL Editor before the first run. Then use GitHub Actions → **StockPulse DSE
+Dividend History** → Run workflow. For a single test, enter `AAMRANET` in the optional tickers
+input. The workflow also runs daily; check its logs because the legacy DSE site may block requests
+or change its HTML. The scraper skips pages where it cannot confidently parse dividend history,
+so an unsuccessful scrape will not erase existing year values.
