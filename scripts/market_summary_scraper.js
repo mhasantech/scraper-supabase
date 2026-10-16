@@ -13,7 +13,9 @@ const { execFileSync } = require('child_process');
 // This avoids relying on undocumented/unstable JSON field names.
 // ============================================================
 
-const DSE_PAGE_URLS = ['https://new.dsebd.org/', 'https://old.dsebd.org/'];
+// Try the legacy site first; if its page/data is incomplete, fall back to the
+// current DSE site shown in the user's screenshots.
+const DSE_PAGE_URLS = ['https://old.dsebd.org/', 'https://new.dsebd.org/'];
 const TABLE_NAME = 'market_summary';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -251,20 +253,25 @@ function parseSummary(text) {
   const trades = source.match(/TRADES\s+([\d,]+)(?:\s+executions)?/i)
     || source.match(/Total Trade\s*([\d,]+)/i);
   const breadth = source.match(/BREADTH\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i)
+    || source.match(/BREADTH\s+(\d+)\s*\/\s*(\d+)/i)
     || source.match(/Issues Advanced\s*(\d+)[\s\S]{0,120}?Issues declined\s*(\d+)[\s\S]{0,120}?Issues Unchanged\s*(\d+)/i);
 
   if (!turnover) throw new Error('TURNOVER / Total Value was not found');
   if (!volume) throw new Error('VOLUME / Total Volume was not found');
   if (!trades) throw new Error('TRADES / Total Trade was not found');
-  if (!breadth) throw new Error('BREADTH / Issues Advanced-Declined-Unchanged was not found');
+  if (!breadth) throw new Error('BREADTH / Issues Advanced-Declined was not found');
 
+  // The current DSE site exposes only advancing/declining issues in its summary
+  // card. Prefer the legacy site's explicit unchanged count when available.
+  // If the selected page has only two breadth values, keep unchanged as null
+  // rather than inventing a market statistic.
   return {
     total_value: numberFrom(turnover[1]),
     total_volume: numberFrom(volume[1]),
     total_trades: numberFrom(trades[1]),
     advanced: numberFrom(breadth[1]),
     declined: numberFrom(breadth[2]),
-    unchanged: numberFrom(breadth[3]),
+    unchanged: breadth[3] == null ? null : numberFrom(breadth[3]),
   };
 }
 
@@ -273,7 +280,7 @@ async function scrapeDse() {
   let selectedUrl = null;
   let lastError = null;
 
-  // Preferred source order requested by the user: new DSE first, old DSE fallback.
+  // Preferred source order: legacy DSE first, current DSE as fallback.
   for (const url of DSE_PAGE_URLS) {
     try {
       console.log(`🌐 Trying DSE source: ${url}`);
@@ -284,8 +291,15 @@ async function scrapeDse() {
         html = await fallbackHttpFetch(url);
       }
       const candidateText = marketSummaryText(html);
-      parseSummary(candidateText);
+      const candidateSummary = parseSummary(candidateText);
       parseDsex(html, candidateText);
+      // Require the three core activity values from a source before selecting it.
+      // Breadth's unchanged count is optional because the new DSE page omits it.
+      if (!(candidateSummary.total_value >= 0) ||
+          !(candidateSummary.total_volume >= 0) ||
+          !(candidateSummary.total_trades >= 0)) {
+        throw new Error('Source is missing one or more core market activity values');
+      }
       selectedUrl = url;
       break;
     } catch (err) {
@@ -327,7 +341,8 @@ async function scrapeDse() {
   if (!(data.total_trades >= 0)) throw new Error('Invalid total trades');
   if (!(data.total_volume >= 0)) throw new Error('Invalid total volume');
   if (!(data.total_value >= 0)) throw new Error('Invalid total value');
-  if (data.advanced < 0 || data.declined < 0 || data.unchanged < 0) {
+  if (data.advanced < 0 || data.declined < 0 ||
+      (data.unchanged != null && data.unchanged < 0)) {
     throw new Error('Invalid market breadth values');
   }
 
@@ -400,7 +415,7 @@ async function main() {
   console.log(`Total Value   : ${valueCrore.toFixed(2)} cr`);
   console.log(`Advanced      : ${data.advanced}`);
   console.log(`Declined      : ${data.declined}`);
-  console.log(`Unchanged     : ${data.unchanged}`);
+  console.log(`Unchanged     : ${data.unchanged == null ? 'not provided by source' : data.unchanged}`);
   console.log(`Condition     : ${data.market_status}`);
   console.log(`Market Date   : ${data.market_date}`);
 
