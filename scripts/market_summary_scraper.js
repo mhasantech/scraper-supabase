@@ -1,4 +1,5 @@
 const axios = require('axios');
+const cheerio = require('cheerio');
 const https = require('https');
 const { execFileSync } = require('child_process');
 
@@ -175,25 +176,64 @@ function findCardContext(html, label) {
   return html.slice(Math.max(0, match.index - 1000), match.index + 7000);
 }
 
+function numericCells(cells) {
+  return cells.map(cell => cleanText(cell).replace(/\u2212/g, '-'))
+    .map(value => value.match(/[-+]?\s*[\d,]+(?:\.\d+)?\s*%?/))
+    .map(match => match ? match[0].trim() : null);
+}
+
+function legacyTableRows(html) {
+  const $ = cheerio.load(html || '');
+  const rows = [];
+  $('tr').each((_, tr) => {
+    const cells = $(tr).find('th, td').map((__, cell) => $(cell).text().replace(/\s+/g, ' ').trim()).get();
+    if (cells.length >= 2) rows.push(cells);
+  });
+  return rows;
+}
+
+function signedNumber(value) {
+  if (value == null) return null;
+  const normalized = String(value).replace(/\u2212/g, '-').replace(/,/g, '').replace(/\s+/g, '');
+  const n = numberFrom(normalized);
+  if (n == null) return null;
+  return /^-/.test(normalized) ? -Math.abs(n) : n;
+}
+
 function parseDsex(html, text) {
   const sourceText = String(text || '').replace(/\s+/g, ' ').trim();
+  const rows = legacyTableRows(html);
 
-  // Legacy DSE table: "DSEX Index 5452.05858 22.68731 0.41786%"
-  // New DSE card: "DSEX 5,408.90 −0.00 (+0.00%)"
+  // Prefer the actual legacy table cells. The old DSE page keeps the label,
+  // index value, point change and percentage in separate cells, so flattening
+  // all HTML into one string is fragile (icons and nested spans break regexes).
+  for (const cells of rows) {
+    const label = cleanText(cells[0]).replace(/\s+/g, ' ').trim();
+    if (!/^DSEX\s*Index$/i.test(label)) continue;
+    const nums = numericCells(cells.slice(1)).filter(Boolean);
+    if (nums.length >= 3) {
+      const dsex = numberFrom(nums[0]);
+      const change = signedNumber(nums[1]);
+      const changePercent = signedNumber(nums[2].replace(/%/g, ''));
+      if (dsex > 0 && change != null && changePercent != null) {
+        return { dsex, change, change_percent: changePercent };
+      }
+    }
+  }
+
+  // Flattened legacy-table fallback for pages whose table markup is unusual.
   const oldTable = sourceText.match(
     /DSEX\s+Index\s+([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i
   );
   if (oldTable) {
-    const dsex = numberFrom(oldTable[1]);
-    let change = numberFrom(oldTable[2]);
-    let changePercent = numberFrom(oldTable[3]);
-    if (/[-−–]/.test(oldTable[2].trim().charAt(0))) change = -Math.abs(change);
-    if (/[-−–]/.test(oldTable[3].trim().charAt(0))) changePercent = -Math.abs(changePercent);
-    return { dsex, change, change_percent: changePercent };
+    return {
+      dsex: numberFrom(oldTable[1]),
+      change: signedNumber(oldTable[2]),
+      change_percent: signedNumber(oldTable[3]),
+    };
   }
 
-  // Current site uses a DSEX card. Capture the numeric value and the percent
-  // in a bounded section so percentages from unrelated ticker rows are ignored.
+  // Current DSE card fallback.
   const dsexLabel = /DSEX/i.exec(sourceText);
   if (dsexLabel) {
     const nearby = sourceText.slice(dsexLabel.index, dsexLabel.index + 180);
@@ -202,14 +242,7 @@ function parseDsex(html, text) {
       const dsex = numberFrom(valueMatch[1]);
       const percentMatch = nearby.match(/([-+−–]?\s*\d+(?:\.\d+)?)\s*%/);
       if (percentMatch) {
-        let changePercent = numberFrom(percentMatch[1]);
-        if (/[-−–]/.test(percentMatch[1].trim().charAt(0))) {
-          changePercent = -Math.abs(changePercent);
-        } else if (/^\s*\+/.test(percentMatch[1])) {
-          changePercent = Math.abs(changePercent);
-        }
-        // When displayed percent is 0.00, calculate it from the prior day's
-        // database record later, rather than assuming the index did not move.
+        const changePercent = signedNumber(percentMatch[1]);
         const change = changePercent === 0
           ? 0
           : Number((dsex - dsex / (1 + changePercent / 100)).toFixed(5));
@@ -217,39 +250,44 @@ function parseDsex(html, text) {
       }
     }
   }
-
-  // HTML fallback: strip tags and try the old index table's label/value row.
-  const htmlText = cleanText(findCardContext(html, 'DSEX')).replace(/\s+/g, ' ');
-  const oldFallback = htmlText.match(
-    /DSEX\s+Index\s+([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i
-  );
-  if (oldFallback) {
-    let change = numberFrom(oldFallback[2]);
-    let changePercent = numberFrom(oldFallback[3]);
-    if (/[-−–]/.test(oldFallback[2].trim().charAt(0))) change = -Math.abs(change);
-    if (/[-−–]/.test(oldFallback[3].trim().charAt(0))) changePercent = -Math.abs(changePercent);
-    return { dsex: numberFrom(oldFallback[1]), change, change_percent: changePercent };
-  }
-  throw new Error('DSEX value/change was not found in either the legacy index table or current DSE summary card');
+  throw new Error('DSEX value/change was not found in the legacy DSEX Index table or current DSE summary card');
 }
 
-function parseSummary(text) {
+function parseSummary(text, html = '') {
   const source = String(text || '').replace(/\s+/g, ' ').trim();
+  const rows = legacyTableRows(html);
+  let activityValues = null;
+  let breadthValues = null;
 
-  // Legacy DSE renders the three activity labels in one table header row,
-  // then places their numeric values together in the next row. Therefore the
-  // number does NOT necessarily follow "Total Volume" immediately.
+  // Read legacy DSE table rows cell-by-cell: header and values are separate
+  // rows in the page shown by the user.
+  for (let i = 0; i < rows.length; i++) {
+    const normalized = rows[i].map(v => cleanText(v).toLowerCase().replace(/\s+/g, ' ').trim());
+    if (normalized.some(v => /total\s*trade/.test(v)) &&
+        normalized.some(v => /total\s*volume/.test(v)) &&
+        normalized.some(v => /total\s*value\s*in\s*taka/.test(v))) {
+      const next = rows[i + 1] || [];
+      const nums = numericCells(next).filter(Boolean);
+      if (nums.length >= 3) activityValues = nums.slice(0, 3).map(numberFrom);
+    }
+    if (normalized.some(v => /issues\s*advanced/.test(v)) &&
+        normalized.some(v => /issues\s*declined/.test(v)) &&
+        normalized.some(v => /issues\s*unchanged/.test(v))) {
+      const next = rows[i + 1] || [];
+      const nums = numericCells(next).filter(Boolean);
+      if (nums.length >= 3) breadthValues = nums.slice(0, 3).map(numberFrom);
+    }
+  }
+
   const activityRow = source.match(
     /Total\s+Trade\s+Total\s+Volume\s+Total\s+Value\s+in\s+Taka\s*\(mn\)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)/i
   );
-
   const turnover = source.match(/TURNOVER\s+(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*mn/i)
     || source.match(/Total Value in Taka\s*\(mn\)\s*([\d,]+(?:\.\d+)?)/i);
   const volume = source.match(/VOLUME\s+([\d,]+)(?:\s+shares)?/i)
     || source.match(/Total Volume\s*([\d,]+)/i);
   const trades = source.match(/TRADES\s+([\d,]+)(?:\s+executions)?/i)
     || source.match(/Total Trade\s*([\d,]+)/i);
-
   const breadthRow = source.match(
     /Issues\s+Advanced\s+Issues\s+declined\s+Issues\s+Unchanged\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/i
   );
@@ -257,24 +295,31 @@ function parseSummary(text) {
     || source.match(/BREADTH\s+(\d+)\s*\/\s*(\d+)/i)
     || breadthRow;
 
-  const totalTrades = activityRow ? numberFrom(activityRow[1]) : (trades ? numberFrom(trades[1]) : null);
-  const totalVolume = activityRow ? numberFrom(activityRow[2]) : (volume ? numberFrom(volume[1]) : null);
-  const totalValue = activityRow ? numberFrom(activityRow[3]) : (turnover ? numberFrom(turnover[1]) : null);
+  const totalTrades = activityValues ? activityValues[0] : (activityRow ? numberFrom(activityRow[1]) : (trades ? numberFrom(trades[1]) : null));
+  const totalVolume = activityValues ? activityValues[1] : (activityRow ? numberFrom(activityRow[2]) : (volume ? numberFrom(volume[1]) : null));
+  const totalValue = activityValues ? activityValues[2] : (activityRow ? numberFrom(activityRow[3]) : (turnover ? numberFrom(turnover[1]) : null));
+  const advanced = breadthValues ? breadthValues[0] : (breadth ? numberFrom(breadth[1]) : null);
+  const declined = breadthValues ? breadthValues[1] : (breadth ? numberFrom(breadth[2]) : null);
+  let unchanged = breadthValues ? breadthValues[2] : (breadth && breadth[3] != null ? numberFrom(breadth[3]) : null);
+
+  // New DSE provides advanced/declined but may omit unchanged. Infer it from
+  // the currently expected 385 listed issues only when the source lacks it.
+  if (unchanged == null && advanced != null && declined != null) {
+    unchanged = Math.max(0, 385 - (advanced + declined));
+  }
 
   if (totalValue == null) throw new Error('TURNOVER / Total Value was not found');
   if (totalVolume == null) throw new Error('VOLUME / Total Volume was not found');
   if (totalTrades == null) throw new Error('TRADES / Total Trade was not found');
-  if (!breadth) throw new Error('BREADTH / Issues Advanced-Declined was not found');
+  if (advanced == null || declined == null) throw new Error('BREADTH / Issues Advanced-Declined was not found');
 
   return {
     total_value: totalValue,
     total_volume: totalVolume,
     total_trades: totalTrades,
-    advanced: numberFrom(breadth[1]),
-    declined: numberFrom(breadth[2]),
-    unchanged: breadth[3] == null
-      ? Math.max(0, 385 - (numberFrom(breadth[1]) + numberFrom(breadth[2])))
-      : numberFrom(breadth[3]),
+    advanced,
+    declined,
+    unchanged,
   };
 }
 
@@ -294,7 +339,7 @@ async function scrapeDse() {
         html = await fallbackHttpFetch(url);
       }
       const candidateText = marketSummaryText(html);
-      const candidateSummary = parseSummary(candidateText);
+      const candidateSummary = parseSummary(candidateText, html);
       parseDsex(html, candidateText);
       // Require the three core activity values from a source before selecting it.
       // Breadth's unchanged count is optional because the new DSE page omits it.
@@ -322,7 +367,7 @@ async function scrapeDse() {
   console.log(`📊 Market Summary text: ${text.slice(0, 1200)}`);
 
   const dsex = parseDsex(html, text);
-  const summary = parseSummary(text);
+  const summary = parseSummary(text, html);
   const marketDate = getDhakaDate();
 
   // If the source reports 0.00% (common when the market is closed or its
@@ -456,8 +501,12 @@ async function main() {
   console.log('🎉 MARKET SUMMARY SCRAPER COMPLETED');
 }
 
-main().catch(error => {
-  console.error('❌ MARKET SUMMARY SCRAPER FAILED');
-  console.error(error.response?.data || error.message || error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error('❌ MARKET SUMMARY SCRAPER FAILED');
+    console.error(error.response?.data || error.message || error);
+    process.exit(1);
+  });
+}
+
+module.exports = { parseDsex, parseSummary, marketSummaryText, cleanText, numberFrom };
