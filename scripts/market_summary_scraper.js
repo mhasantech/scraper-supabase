@@ -176,99 +176,110 @@ function findCardContext(html, label) {
 }
 
 function parseDsex(html, text) {
-  // IMPORTANT: parse the visible Market Summary text first.
-  // The rendered DSE page currently exposes the card as:
-  // DSEX 5,532.75 ▼ 0.82%
-  // Looking only at a raw HTML context can accidentally land on a
-  // script/component occurrence of "DSEX" that does not contain the
-  // visible percentage.
-  const visible = String(text || '').match(
-    /DSEX\s+([\d,]+(?:\.\d+)?)\s*(?:([▼▲])\s*)?([-+]?\d+(?:\.\d+)?)\s*%/i
-  );
-
-  if (visible) {
-    const dsex = numberFrom(visible[1]);
-    let changePercent = numberFrom(visible[3]);
-    const arrow = visible[2] || '';
-
-    if (arrow === '▼') changePercent = -Math.abs(changePercent);
-    if (arrow === '▲') changePercent = Math.abs(changePercent);
-
-    // DSE currently displays the percentage but not always the exact
-    // absolute index change in the Market Summary card. Derive the
-    // previous close and absolute change from the displayed percentage.
-    // This is consistent with the rounded percentage shown by DSE.
-    const previousClose = dsex / (1 + changePercent / 100);
-    const change = dsex - previousClose;
-
-    return {
-      dsex,
-      change: Number(change.toFixed(5)),
-      change_percent: changePercent,
-    };
+  // The current DSE site may render the index card as:
+  // "DSEX 5,408.90 −0.00 · 0.00%" or "DSEX 5,408.90 ▲ 0.25%".
+  // Do not require the arrow/change value to be adjacent to the percentage.
+  const sourceText = String(text || '');
+  const label = /DSEX/i.exec(sourceText);
+  if (label) {
+    const nearby = sourceText.slice(label.index, label.index + 500);
+    const valueMatch = nearby.match(/DSEX\s*([\d,]+(?:\.\d+)?)/i);
+    if (valueMatch) {
+      const dsex = numberFrom(valueMatch[1]);
+      // Prefer a percent explicitly near the DSEX card; the new site may put
+      // an absolute change (e.g. "−0.00") before the percentage.
+      const percentMatches = [...nearby.matchAll(/([-+−–]?\s*\d+(?:\.\d+)?)\s*%/g)];
+      if (percentMatches.length) {
+        const last = percentMatches[percentMatches.length - 1];
+        let changePercent = numberFrom(last[1]);
+        const prefix = nearby.slice(Math.max(0, last.index - 30), last.index);
+        if (/[▼↓−–-]\s*$/.test(prefix) && changePercent !== 0) {
+          changePercent = -Math.abs(changePercent);
+        } else if (/[▲↑+]\s*$/.test(prefix)) {
+          changePercent = Math.abs(changePercent);
+        } else if (/[−–-]\s*\d+(?:\.\d+)?\s*[·•]\s*$/.test(prefix)) {
+          // The displayed absolute change is negative; the percent follows
+          // after a separator, so preserve its sign.
+          changePercent = -Math.abs(changePercent);
+        }
+        const previousClose = changePercent === 0
+          ? dsex
+          : dsex / (1 + changePercent / 100);
+        const change = dsex - previousClose;
+        return {
+          dsex,
+          change: Number(change.toFixed(5)),
+          change_percent: changePercent,
+        };
+      }
+    }
   }
 
-  // Fallback: inspect nearby rendered HTML in case DSE changes the text
-  // extraction format while keeping the percentage in the DOM.
-  const contextHtml = findCardContext(html, 'DSEX');
-  const context = cleanText(contextHtml);
-
-  const pctMatch = context.match(
-    /DSEX\s+([\d,]+(?:\.\d+)?)\s*(?:([▼▲])\s*)?([-+]?\d+(?:\.\d+)?)\s*%/i
-  );
-  const valueMatch = context.match(/DSEX\s+([\d,]+(?:\.\d+)?)/i);
-
+  // Fallback to rendered HTML around the first DSEX card label.
+  const context = cleanText(findCardContext(html, 'DSEX')).slice(0, 2500);
+  const valueMatch = context.match(/DSEX\s*([\d,]+(?:\.\d+)?)/i);
+  const percentMatches = [...context.matchAll(/([-+−–]?\s*\d+(?:\.\d+)?)\s*%/g)];
   if (!valueMatch) {
     throw new Error('DSEX value was not found on the rendered DSE /markets page');
   }
-
-  const dsex = numberFrom(valueMatch[1]);
-
-  if (!pctMatch) {
-    throw new Error('DSEX percentage change was not found on the rendered DSE page');
+  if (!percentMatches.length) {
+    throw new Error('DSEX percentage change was not found near the DSEX card on the rendered DSE page');
   }
 
-  let changePercent = numberFrom(pctMatch[3]);
-  const arrow = pctMatch[2] || '';
-
-  if (arrow === '▼') changePercent = -Math.abs(changePercent);
-  if (arrow === '▲') changePercent = Math.abs(changePercent);
-
-  const previousClose = dsex / (1 + changePercent / 100);
-  const change = dsex - previousClose;
-
+  const dsex = numberFrom(valueMatch[1]);
+  const last = percentMatches[percentMatches.length - 1];
+  let changePercent = numberFrom(last[1]);
+  const prefix = context.slice(Math.max(0, last.index - 30), last.index);
+  if (/[▼↓−–-]\s*$/.test(prefix) && changePercent !== 0) {
+    changePercent = -Math.abs(changePercent);
+  } else if (/[▲↑+]\s*$/.test(prefix)) {
+    changePercent = Math.abs(changePercent);
+  }
+  const previousClose = changePercent === 0 ? dsex : dsex / (1 + changePercent / 100);
   return {
     dsex,
-    change: Number(change.toFixed(5)),
+    change: Number((dsex - previousClose).toFixed(5)),
     change_percent: changePercent,
   };
 }
 
 function parseSummary(text) {
-  const source = String(text || '');
+  const source = String(text || '').replace(/\s+/g, ' ').trim();
+
+  // Legacy DSE renders the three activity labels in one table header row,
+  // then places their numeric values together in the next row. Therefore the
+  // number does NOT necessarily follow "Total Volume" immediately.
+  const activityRow = source.match(
+    /Total\s+Trade\s+Total\s+Volume\s+Total\s+Value\s+in\s+Taka\s*\(mn\)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)/i
+  );
+
   const turnover = source.match(/TURNOVER\s+(?:BDT\s*)?([\d,]+(?:\.\d+)?)\s*mn/i)
     || source.match(/Total Value in Taka\s*\(mn\)\s*([\d,]+(?:\.\d+)?)/i);
   const volume = source.match(/VOLUME\s+([\d,]+)(?:\s+shares)?/i)
     || source.match(/Total Volume\s*([\d,]+)/i);
   const trades = source.match(/TRADES\s+([\d,]+)(?:\s+executions)?/i)
     || source.match(/Total Trade\s*([\d,]+)/i);
+
+  const breadthRow = source.match(
+    /Issues\s+Advanced\s+Issues\s+declined\s+Issues\s+Unchanged\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/i
+  );
   const breadth = source.match(/BREADTH\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/i)
     || source.match(/BREADTH\s+(\d+)\s*\/\s*(\d+)/i)
-    || source.match(/Issues Advanced\s*(\d+)[\s\S]{0,120}?Issues declined\s*(\d+)[\s\S]{0,120}?Issues Unchanged\s*(\d+)/i);
+    || breadthRow;
 
-  if (!turnover) throw new Error('TURNOVER / Total Value was not found');
-  if (!volume) throw new Error('VOLUME / Total Volume was not found');
-  if (!trades) throw new Error('TRADES / Total Trade was not found');
+  const totalTrades = activityRow ? numberFrom(activityRow[1]) : (trades ? numberFrom(trades[1]) : null);
+  const totalVolume = activityRow ? numberFrom(activityRow[2]) : (volume ? numberFrom(volume[1]) : null);
+  const totalValue = activityRow ? numberFrom(activityRow[3]) : (turnover ? numberFrom(turnover[1]) : null);
+
+  if (totalValue == null) throw new Error('TURNOVER / Total Value was not found');
+  if (totalVolume == null) throw new Error('VOLUME / Total Volume was not found');
+  if (totalTrades == null) throw new Error('TRADES / Total Trade was not found');
   if (!breadth) throw new Error('BREADTH / Issues Advanced-Declined was not found');
 
-  // The current DSE site exposes only advancing/declining issues in its summary
-  // card. Prefer the legacy site's explicit unchanged count when available.
-  // If the selected page has only two breadth values, keep unchanged as null
-  // rather than inventing a market statistic.
   return {
-    total_value: numberFrom(turnover[1]),
-    total_volume: numberFrom(volume[1]),
-    total_trades: numberFrom(trades[1]),
+    total_value: totalValue,
+    total_volume: totalVolume,
+    total_trades: totalTrades,
     advanced: numberFrom(breadth[1]),
     declined: numberFrom(breadth[2]),
     unchanged: breadth[3] == null ? null : numberFrom(breadth[3]),
