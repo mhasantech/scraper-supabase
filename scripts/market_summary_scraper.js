@@ -176,71 +176,61 @@ function findCardContext(html, label) {
 }
 
 function parseDsex(html, text) {
-  // The current DSE site may render the index card as:
-  // "DSEX 5,408.90 −0.00 · 0.00%" or "DSEX 5,408.90 ▲ 0.25%".
-  // Do not require the arrow/change value to be adjacent to the percentage.
-  const sourceText = String(text || '');
-  const label = /DSEX/i.exec(sourceText);
-  if (label) {
-    const nearby = sourceText.slice(label.index, label.index + 500);
-    const valueMatch = nearby.match(/DSEX\s*([\d,]+(?:\.\d+)?)/i);
+  const sourceText = String(text || '').replace(/\s+/g, ' ').trim();
+
+  // Legacy DSE table: "DSEX Index 5452.05858 22.68731 0.41786%"
+  // New DSE card: "DSEX 5,408.90 −0.00 (+0.00%)"
+  const oldTable = sourceText.match(
+    /DSEX\s+Index\s+([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i
+  );
+  if (oldTable) {
+    const dsex = numberFrom(oldTable[1]);
+    let change = numberFrom(oldTable[2]);
+    let changePercent = numberFrom(oldTable[3]);
+    if (/[-−–]/.test(oldTable[2].trim().charAt(0))) change = -Math.abs(change);
+    if (/[-−–]/.test(oldTable[3].trim().charAt(0))) changePercent = -Math.abs(changePercent);
+    return { dsex, change, change_percent: changePercent };
+  }
+
+  // Current site uses a DSEX card. Capture the numeric value and the percent
+  // in a bounded section so percentages from unrelated ticker rows are ignored.
+  const dsexLabel = /DSEX/i.exec(sourceText);
+  if (dsexLabel) {
+    const nearby = sourceText.slice(dsexLabel.index, dsexLabel.index + 180);
+    const valueMatch = nearby.match(/DSEX(?:\s*·\s*Broad\s+Index)?\s*([\d,]+(?:\.\d+)?)/i);
     if (valueMatch) {
       const dsex = numberFrom(valueMatch[1]);
-      // Prefer a percent explicitly near the DSEX card; the new site may put
-      // an absolute change (e.g. "−0.00") before the percentage.
-      const percentMatches = [...nearby.matchAll(/([-+−–]?\s*\d+(?:\.\d+)?)\s*%/g)];
-      if (percentMatches.length) {
-        const last = percentMatches[percentMatches.length - 1];
-        let changePercent = numberFrom(last[1]);
-        const prefix = nearby.slice(Math.max(0, last.index - 30), last.index);
-        if (/[▼↓−–-]\s*$/.test(prefix) && changePercent !== 0) {
+      const percentMatch = nearby.match(/([-+−–]?\s*\d+(?:\.\d+)?)\s*%/);
+      if (percentMatch) {
+        let changePercent = numberFrom(percentMatch[1]);
+        if (/[-−–]/.test(percentMatch[1].trim().charAt(0))) {
           changePercent = -Math.abs(changePercent);
-        } else if (/[▲↑+]\s*$/.test(prefix)) {
+        } else if (/^\s*\+/.test(percentMatch[1])) {
           changePercent = Math.abs(changePercent);
-        } else if (/[−–-]\s*\d+(?:\.\d+)?\s*[·•]\s*$/.test(prefix)) {
-          // The displayed absolute change is negative; the percent follows
-          // after a separator, so preserve its sign.
-          changePercent = -Math.abs(changePercent);
         }
-        const previousClose = changePercent === 0
-          ? dsex
-          : dsex / (1 + changePercent / 100);
-        const change = dsex - previousClose;
-        return {
-          dsex,
-          change: Number(change.toFixed(5)),
-          change_percent: changePercent,
-        };
+        // When displayed percent is 0.00, calculate it from the prior day's
+        // database record later, rather than assuming the index did not move.
+        const change = changePercent === 0
+          ? 0
+          : Number((dsex - dsex / (1 + changePercent / 100)).toFixed(5));
+        return { dsex, change, change_percent: changePercent };
       }
     }
   }
 
-  // Fallback to rendered HTML around the first DSEX card label.
-  const context = cleanText(findCardContext(html, 'DSEX')).slice(0, 2500);
-  const valueMatch = context.match(/DSEX\s*([\d,]+(?:\.\d+)?)/i);
-  const percentMatches = [...context.matchAll(/([-+−–]?\s*\d+(?:\.\d+)?)\s*%/g)];
-  if (!valueMatch) {
-    throw new Error('DSEX value was not found on the rendered DSE /markets page');
+  // HTML fallback: strip tags and try the old index table's label/value row.
+  const htmlText = cleanText(findCardContext(html, 'DSEX')).replace(/\s+/g, ' ');
+  const oldFallback = htmlText.match(
+    /DSEX\s+Index\s+([\d,]+(?:\.\d+)?)\s+([-+−–]?\s*[\d,]+(?:\.\d+)?)\s+([-+−–]?\s*\d+(?:\.\d+)?)\s*%/i
+  );
+  if (oldFallback) {
+    let change = numberFrom(oldFallback[2]);
+    let changePercent = numberFrom(oldFallback[3]);
+    if (/[-−–]/.test(oldFallback[2].trim().charAt(0))) change = -Math.abs(change);
+    if (/[-−–]/.test(oldFallback[3].trim().charAt(0))) changePercent = -Math.abs(changePercent);
+    return { dsex: numberFrom(oldFallback[1]), change, change_percent: changePercent };
   }
-  if (!percentMatches.length) {
-    throw new Error('DSEX percentage change was not found near the DSEX card on the rendered DSE page');
-  }
-
-  const dsex = numberFrom(valueMatch[1]);
-  const last = percentMatches[percentMatches.length - 1];
-  let changePercent = numberFrom(last[1]);
-  const prefix = context.slice(Math.max(0, last.index - 30), last.index);
-  if (/[▼↓−–-]\s*$/.test(prefix) && changePercent !== 0) {
-    changePercent = -Math.abs(changePercent);
-  } else if (/[▲↑+]\s*$/.test(prefix)) {
-    changePercent = Math.abs(changePercent);
-  }
-  const previousClose = changePercent === 0 ? dsex : dsex / (1 + changePercent / 100);
-  return {
-    dsex,
-    change: Number((dsex - previousClose).toFixed(5)),
-    change_percent: changePercent,
-  };
+  throw new Error('DSEX value/change was not found in either the legacy index table or current DSE summary card');
 }
 
 function parseSummary(text) {
@@ -282,7 +272,9 @@ function parseSummary(text) {
     total_trades: totalTrades,
     advanced: numberFrom(breadth[1]),
     declined: numberFrom(breadth[2]),
-    unchanged: breadth[3] == null ? null : numberFrom(breadth[3]),
+    unchanged: breadth[3] == null
+      ? Math.max(0, 385 - (numberFrom(breadth[1]) + numberFrom(breadth[2])))
+      : numberFrom(breadth[3]),
   };
 }
 
@@ -325,25 +317,53 @@ async function scrapeDse() {
 
   const text = marketSummaryText(html);
 
+  console.log(`✅ Selected DSE source: ${selectedUrl}`);
   console.log(`📄 Rendered DSE DOM: ${html.length} bytes`);
   console.log(`📊 Market Summary text: ${text.slice(0, 1200)}`);
 
   const dsex = parseDsex(html, text);
   const summary = parseSummary(text);
+  const marketDate = getDhakaDate();
+
+  // If the source reports 0.00% (common when the market is closed or its
+  // summary card omits the daily movement), use the previous stored market
+  // day's DSEX to calculate the absolute and percentage change.
+  let calculatedChange = dsex.change;
+  let calculatedPercent = dsex.change_percent;
+  let previousClose = dsex.dsex - dsex.change;
+  if (Math.abs(calculatedPercent) < 0.0000001) {
+    try {
+      const previous = await axios.get(
+        `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${TABLE_NAME}?market_date=lt.${encodeURIComponent(marketDate)}&select=market_date,dsex&order=market_date.desc&limit=1`,
+        { headers: supabaseHeaders, timeout: 30000 }
+      );
+      const previousDsex = numberFrom(previous.data?.[0]?.dsex);
+      if (previousDsex > 0) {
+        previousClose = previousDsex;
+        calculatedChange = Number((dsex.dsex - previousDsex).toFixed(5));
+        calculatedPercent = Number(((calculatedChange / previousDsex) * 100).toFixed(5));
+        console.log(`📚 DSEX change calculated against previous stored market date ${previous.data[0].market_date}: ${previousDsex}`);
+      } else {
+        console.warn('⚠️ No prior DSEX value found; retaining source change of 0.00');
+      }
+    } catch (err) {
+      console.warn(`⚠️ Could not read prior DSEX for change calculation: ${err.message}`);
+    }
+  }
 
   const data = {
-    market_date: getDhakaDate(),
+    market_date: marketDate,
     dsex: dsex.dsex,
-    previous_close: Number((dsex.dsex - dsex.change).toFixed(5)),
-    change: dsex.change,
-    change_percent: dsex.change_percent,
+    previous_close: Number(previousClose.toFixed(5)),
+    change: calculatedChange,
+    change_percent: calculatedPercent,
     total_trades: summary.total_trades,
     total_volume: summary.total_volume,
     total_value: summary.total_value,
     advanced: summary.advanced,
     declined: summary.declined,
     unchanged: summary.unchanged,
-    market_status: condition(dsex.change),
+    market_status: condition(calculatedChange),
     scraped_at: new Date().toISOString(),
   };
 
