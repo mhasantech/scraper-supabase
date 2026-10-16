@@ -86,23 +86,39 @@ function parsePageDate(text, now = dhakaToday()) {
   return diffDays <= 6 ? iso : null;
 }
 
-// Looks at the raw HTML right after the "DSEX Index" label for an up/down arrow
-// (image name, alt text, class or title) and returns 'up', 'down' or null.
-function arrowDirection(html) {
-  const labelRe = /D(?:<[^>]*>|\s)*S(?:<[^>]*>|\s)*E(?:<[^>]*>|\s)*X(?:<[^>]*>|\s)*Index/i;
-  const m = labelRe.exec(String(html || ''));
-  if (!m) return null;
+// Reads the up/down arrow that belongs to the DSEX row and returns 'up', 'down' or null.
+//
+// The label "DSEX Index" can appear several times in the raw HTML (for example in the site's
+// navigation menu), so the occurrence is chosen by its content: it must be followed, in the
+// page text, by the same index value that was parsed. Only the markup of that row (up to the
+// next DSES label) is inspected, and keywords must be whole words (so "dropdown" is not "down").
+const LABEL_TAGS = '(?:<[^>]*>|\\s|&nbsp;)*';
+function arrowDirection(html, valueRaw) {
+  const raw = String(html || '');
+  const labelRe = new RegExp(`D${LABEL_TAGS}S${LABEL_TAGS}E${LABEL_TAGS}X${LABEL_TAGS}Index`, 'gi');
+  const nextRe = new RegExp(`D${LABEL_TAGS}S${LABEL_TAGS}E${LABEL_TAGS}S${LABEL_TAGS}Index`, 'i');
+  const valueDigits = String(valueRaw || '').replace(/,/g, '').trim();
 
-  let slice = String(html).slice(m.index, m.index + 1800);
-  const next = /D(?:<[^>]*>|\s)*S(?:<[^>]*>|\s)*E(?:<[^>]*>|\s)*S(?:<[^>]*>|\s)*Index/i.exec(slice.slice(10));
-  if (next) slice = slice.slice(0, next.index + 10);
+  let chosen = null;
+  let m;
+  while ((m = labelRe.exec(raw)) !== null) {
+    const ahead = htmlToLegacyText(raw.slice(m.index, m.index + 900)).replace(/,/g, '');
+    if (!valueDigits || ahead.includes(valueDigits)) { chosen = m; break; }
+  }
+  if (!chosen) return null;
+
+  let slice = raw.slice(chosen.index, chosen.index + 1800);
+  const next = nextRe.exec(slice.slice(12));
+  if (next) slice = slice.slice(0, next.index + 12);
 
   const attrs = [];
-  slice.replace(/(?:src|alt|class|title|data-[\w-]+)\s*=\s*["']([^"']*)["']/gi, (_, v) => { attrs.push(v); return _; });
-  const joined = attrs.join(' ') + ' ' + (slice.match(/[\u25b2\u25bc]/g) || []).join(' ');
+  slice.replace(/(?:src|alt|class|title|style|data-[\w-]+)\s*=\s*["']([^"']*)["']/gi, (whole, v) => { attrs.push(v); return whole; });
+  const glyphs = (slice.match(/[\u25b2\u25bc\u2191\u2193]/g) || []).join(' ');
+  const joined = `${attrs.join(' ')} ${glyphs}`;
 
-  const down = /down|decline|decrease|negative|\bred\b|\u25bc/i.test(joined);
-  const up = /\bup\b|up\.|up_|_up|-up|increase|positive|\bgreen\b|\u25b2|advance/i.test(joined);
+  const word = w => new RegExp(`(?<![a-z])(?:${w})(?![a-z])`, 'i');
+  const down = word('down|decline|declined|decrease|negative|loss|red').test(joined) || /[\u25bc\u2193]/.test(joined);
+  const up = word('up|advance|advanced|increase|positive|gain|green').test(joined) || /[\u25b2\u2191]/.test(joined);
   if (down && !up) return 'down';
   if (up && !down) return 'up';
   return null;
@@ -119,7 +135,7 @@ function readIndexRow(text, label) {
     `${labelRegex(label).source}\\s+(${NUM})\\s+(${SGN}${NUM})\\s+(${SGN}${NUM})\\s*%`, 'i'
   ).exec(text);
   if (strict) {
-    return { value: toNumber(strict[1]), changeRaw: strict[2], percentRaw: strict[3], mode: 'strict' };
+    return { value: toNumber(strict[1]), valueRaw: strict[1], changeRaw: strict[2], percentRaw: strict[3], mode: 'strict' };
   }
 
   // Loose: take the numbers that follow the label (extra cells / icons in between).
@@ -130,7 +146,7 @@ function readIndexRow(text, label) {
   const plain = tokens.filter(t => !t.includes('%'));
   const percent = tokens.find(t => t.includes('%'));
   if (plain.length >= 2 && percent) {
-    return { value: toNumber(plain[0]), changeRaw: plain[1], percentRaw: percent.replace('%', ''), mode: 'loose' };
+    return { value: toNumber(plain[0]), valueRaw: plain[0], changeRaw: plain[1], percentRaw: percent.replace('%', ''), mode: 'loose' };
   }
   return null;
 }
@@ -153,11 +169,20 @@ function parseLegacyDsex(html) {
   let percent = toNumber(row.percentRaw);
   if (change == null || percent == null) throw new Error('Legacy DSEX change values are not numeric');
 
+  // signSource tells the caller how much to trust the sign:
+  //   'text'  - the page itself printed a minus sign (trusted)
+  //   'arrow' - taken from the up/down arrow markup of the DSEX row (cross-check with the database)
+  //   'none'  - nothing proves the sign (must be resolved from the database)
   const hasMinus = /[-\u2212\u2013]/.test(row.changeRaw) || /[-\u2212\u2013]/.test(row.percentRaw);
-  let direction = hasMinus ? 'down' : arrowDirection(html);
+  let direction = null;
+  let signSource = 'none';
+  if (hasMinus) { direction = 'down'; signSource = 'text'; }
+  else {
+    direction = arrowDirection(html, row.valueRaw);
+    if (direction) signSource = 'arrow';
+  }
   if (direction === 'down') { change = -Math.abs(change); percent = -Math.abs(percent); }
-  else if (direction === 'up') { change = Math.abs(change); percent = Math.abs(percent); }
-  else if (!hasMinus) { change = Math.abs(change); percent = Math.abs(percent); direction = null; }
+  else { change = Math.abs(change); percent = Math.abs(percent); }
 
   // Consistency: change / previous close should equal the reported percent.
   const prev = dsex - change;
@@ -170,6 +195,7 @@ function parseLegacyDsex(html) {
     change: Number(change.toFixed(5)),
     change_percent: Number(percent.toFixed(5)),
     direction,          // null means the sign could not be proven from the page
+    signSource,
     mode: row.mode,
   };
 }
