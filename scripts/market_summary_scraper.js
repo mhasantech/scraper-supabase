@@ -217,7 +217,7 @@ async function renderDseDocuments(url) {
 }
 
 async function fallbackHttpFetch(url) {
-  console.log('⚠️ Browser render unavailable; trying direct DSE HTML as fallback...');
+  console.log(`🌐 Fetching ${url} over plain HTTP...`);
 
   const response = await axios.get(url, {
     httpsAgent,
@@ -281,7 +281,7 @@ function parseDsex(html, text) {
   let legacyError = null;
   try {
     const legacy = parseLegacyDsex(html);
-    console.log(`🧩 Parsed legacy DSEX row (${legacy.mode}): value=${legacy.dsex}, change=${legacy.change}, percent=${legacy.change_percent}, sign=${legacy.direction || 'unproven'}`);
+    console.log(`🧩 Parsed legacy DSEX row (${legacy.mode}): value=${legacy.dsex}, change=${legacy.change}, percent=${legacy.change_percent}, sign=${legacy.direction || 'unproven'} (${legacy.signSource})`);
     return legacy;
   } catch (err) {
     legacyError = err;
@@ -491,7 +491,11 @@ async function scrapeDse() {
   const { url: selectedUrl, strategy, html, text, summary, dsex } = picked;
   console.log(`✅ Selected DSE source: ${selectedUrl} (${strategy})`);
   console.log(`📄 Page size: ${html.length} bytes`);
-  console.log(`📊 Market Summary text: ${htmlToLegacyText(html).slice(0, 600)}`);
+  {
+    const flat = htmlToLegacyText(html);
+    const at = flat.search(/Last\s+update/i);
+    console.log(`📊 Market Summary text: ${flat.slice(at >= 0 ? at : 0, (at >= 0 ? at : 0) + 420)}`);
+  }
 
   // Use the date printed on the page ("Last update on Oct 15, 2026 ...") so a run on a
   // Friday/Saturday/holiday stores the real trading day instead of creating a row for today.
@@ -506,28 +510,48 @@ async function scrapeDse() {
   let calculatedPercent = dsex.change_percent;
   let previousClose = dsex.dsex - dsex.change;
   const zeroMove = Math.abs(calculatedPercent) < 0.0000001;
-  const unsignedMove = dsex.direction === null && !zeroMove;
+  // A minus sign printed by the page is trusted. A sign taken from an arrow (or not provable at
+  // all) is confirmed against the previous stored market day before it is saved.
+  const needsCrossCheck = dsex.signSource === 'arrow' || dsex.signSource === 'none';
 
-  if (zeroMove || unsignedMove) {
+  if (zeroMove || needsCrossCheck) {
     try {
       const previous = await withRetry('Supabase previous DSEX lookup', () => axios.get(
         `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${TABLE_NAME}?market_date=lt.${encodeURIComponent(marketDate)}&select=market_date,dsex&order=market_date.desc&limit=1`,
         { headers: supabaseHeaders, timeout: 30000 }
       ));
       const previousDsex = numberFrom(previous.data?.[0]?.dsex);
-      if (previousDsex > 0 && zeroMove) {
+      const previousDate = previous.data?.[0]?.market_date;
+
+      if (!(previousDsex > 0)) {
+        console.warn('⚠️ No prior DSEX value found; keeping the change reported by the source');
+      } else if (zeroMove) {
+        // The source shows no movement (market closed / summary card without change):
+        // difference against the previous stored market day.
         previousClose = previousDsex;
         calculatedChange = Number((dsex.dsex - previousDsex).toFixed(5));
         calculatedPercent = Number(((calculatedChange / previousDsex) * 100).toFixed(5));
-        console.log(`📚 DSEX change calculated against previous stored market date ${previous.data[0].market_date}: ${previousDsex}`);
-      } else if (previousDsex > 0 && unsignedMove) {
-        const sign = dsex.dsex >= previousDsex ? 1 : -1;
-        calculatedChange = sign * Math.abs(dsex.change);
-        calculatedPercent = sign * Math.abs(dsex.change_percent);
-        previousClose = dsex.dsex - calculatedChange;
-        console.log(`📚 DSEX direction (${sign > 0 ? 'up' : 'down'}) confirmed against previous stored market date ${previous.data[0].market_date}: ${previousDsex}`);
+        console.log(`📚 DSEX change calculated against previous stored market date ${previousDate}: ${previousDsex}`);
       } else {
-        console.warn('⚠️ No prior DSEX value found; keeping the change reported by the source');
+        const reported = Math.abs(dsex.change);
+        const dbChange = dsex.dsex - previousDsex;
+        const sameMagnitude = Math.abs(Math.abs(dbChange) - reported) <= Math.max(0.5, reported * 0.05);
+        if (sameMagnitude) {
+          // Two independent facts agree on the size of the move, so the database gives the sign.
+          const sign = dbChange >= 0 ? 1 : -1;
+          calculatedChange = sign * reported;
+          calculatedPercent = sign * Math.abs(dsex.change_percent);
+          previousClose = dsex.dsex - calculatedChange;
+          console.log(`📚 DSEX direction (${sign > 0 ? 'up' : 'down'}) confirmed by previous stored market date ${previousDate}: ${previousDsex}`);
+        } else if (dsex.signSource === 'none') {
+          const sign = dbChange >= 0 ? 1 : -1;
+          calculatedChange = sign * reported;
+          calculatedPercent = sign * Math.abs(dsex.change_percent);
+          previousClose = dsex.dsex - calculatedChange;
+          console.warn(`⚠️ Page change (${reported}) differs from stored change (${dbChange.toFixed(2)} vs ${previousDate}); direction taken from the stored data`);
+        } else {
+          console.warn(`⚠️ Arrow says ${dsex.direction}, but the stored previous day (${previousDate}: ${previousDsex}) implies ${dbChange.toFixed(2)}; keeping the arrow. Check the market_summary table for a bad row.`);
+        }
       }
     } catch (err) {
       console.warn(`⚠️ Could not read prior DSEX for change calculation: ${err.message}`);

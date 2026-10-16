@@ -71,6 +71,28 @@ for (const [name, html] of Object.entries(variants)) {
   assert.throws(() => parseLegacyDsex(newSite), /not found/);
   console.log('✅ new-site text is left to the new-site parser');
 }
+
+// REAL-WORLD BUG: the label also appears in the navigation menu (with "dropdown" markup).
+// The arrow must come from the table row, not from the first label in the HTML.
+{
+  const nav = `<ul class="nav"><li class="dropdown"><a class="dropdown-toggle" href="/indices">DSE<b>X</b> Index</a>
+               <ul class="dropdown-menu"><li><a href="/dsex">DSEX Index</a></li></ul></li></ul>`;
+  const row = arrow => `<tr><td>DSE<span>X</span> Index</td><td>5452.05858</td><td>22.68731</td><td>0.41786%</td><td>${arrow}</td></tr>
+                        <tr><td>DSE<span>S</span> Index</td><td>1077.95857</td><td>5.51703</td><td>0.51444%</td><td><img src="down_red.png"></td></tr>`;
+  let r = parseLegacyDsex(nav + page(row('<i class="fa fa-angle-double-up" style="color:green"></i>')));
+  assert.strictEqual(r.change, 22.68731); assert.strictEqual(r.signSource, 'arrow');
+  r = parseLegacyDsex(nav + page(row('<img src="images/up_green.gif">')));
+  assert.strictEqual(r.change, 22.68731);
+  r = parseLegacyDsex(nav + page(row('<img src="images/down_red.gif">')));
+  assert.strictEqual(r.change, -22.68731);
+  console.log('✅ nav-menu "dropdown" markup no longer turns an up day into a down day');
+}
+{
+  const r = parseLegacyDsex(page(`<tr><td>DSE<span>X</span> Index</td><td>5452.05858</td><td>22.68731</td><td>0.41786%</td><td></td></tr>`));
+  assert.strictEqual(r.signSource, 'none'); assert.strictEqual(r.direction, null);
+  console.log('✅ missing arrow => sign reported as unproven (database decides)');
+}
+
 // Dates
 {
   const now = { year: 2026, iso: '2026-10-16' };
