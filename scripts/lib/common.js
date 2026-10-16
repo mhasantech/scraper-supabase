@@ -61,15 +61,37 @@ function supabaseHeaders(extra = {}) {
   };
 }
 
+async function retry(operation, label = 'operation', attempts = 3, baseDelayMs = 1200) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try { return await operation(); }
+    catch (err) {
+      lastError = err;
+      const status = err.response?.status;
+      // Retry transient network/server/rate-limit failures only. Do not hide schema/auth errors.
+      const retryable = !status || status === 408 || status === 425 || status === 429 || status >= 500;
+      if (!retryable || attempt === attempts) break;
+      const delay = baseDelayMs * attempt;
+      console.warn(`⚠️ ${label} attempt ${attempt}/${attempts} failed (${err.code || status || err.message}); retrying in ${delay}ms`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
 async function upsert(table, record, conflictColumns) {
   const url = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${table}?on_conflict=${encodeURIComponent(conflictColumns)}`;
-  const response = await axios.post(url, record, {
-    headers: supabaseHeaders({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
-    httpsAgent,
-    timeout: 30000
-  });
-  return [200, 201, 202, 204].includes(response.status);
+  return retry(async () => {
+    const response = await axios.post(url, record, {
+      headers: supabaseHeaders({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+      httpsAgent,
+      timeout: 45000
+    });
+    if (![200, 201, 202, 204].includes(response.status)) throw new Error(`Supabase ${table} upsert returned HTTP ${response.status}`);
+    return true;
+  }, `Supabase upsert ${table}`);
 }
+
 
 async function updateOrInsertByDate(table, dateField, date, record) {
   const base = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${table}`;
@@ -113,7 +135,7 @@ function renderPage(url, virtualTimeBudget = 15000) {
     '--dump-dom', url
   ];
   const html = execFileSync(browser, args, {
-    encoding: 'utf8', timeout: 60000, maxBuffer: 50 * 1024 * 1024
+    encoding: 'utf8', timeout: 120000, maxBuffer: 50 * 1024 * 1024
   });
   if (!html || html.length < 1000) throw new Error('Rendered page is empty/too small.');
   return html;
@@ -122,5 +144,5 @@ function renderPage(url, virtualTimeBudget = 15000) {
 module.exports = {
   axios, httpsAgent, SUPABASE_URL, SUPABASE_SERVICE_KEY,
   getDhakaDate, cleanText, numberFrom, normalizeHeader, condition,
-  supabaseHeaders, upsert, updateOrInsertByDate, findBrowser, renderPage
+  supabaseHeaders, upsert, retry, updateOrInsertByDate, findBrowser, renderPage
 };
