@@ -15,7 +15,8 @@
     "historical": "node scripts/update_dse_history.js",
     "precompute:indicators": "node scripts/precompute_indicators.js",
     "backup:firebase": "node scripts/backup_supabase_to_firebase.js",
-    "cleanup:firebase-market-backups": "node scripts/cleanup_legacy_market_backups.js"
+    "cleanup:firebase-market-backups": "node scripts/cleanup_legacy_market_backups.js",
+    "test:dse-legacy": "node scripts/test_dse_legacy.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
