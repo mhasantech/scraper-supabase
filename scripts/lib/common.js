@@ -10,7 +10,8 @@ if (!SUPABASE_SERVICE_KEY) {
   throw new Error('SUPABASE_SERVICE_KEY environment variable is missing');
 }
 
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+// Keep TLS certificate verification enabled in production.
+const httpsAgent = new https.Agent({ rejectUnauthorized: true });
 
 const browserCandidates = [
   process.env.CHROME_BIN,
