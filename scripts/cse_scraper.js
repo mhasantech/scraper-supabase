@@ -115,24 +115,27 @@ async function startScraper() {
     throw new Error(`CSE current-price page returned only ${market.length} usable rows; refusing to save partial data.`);
   }
 
-  // Details are fetched with limited concurrency so the CSE server is not hammered.
-  const concurrency = 8;
+  // Price scrape runs frequently. Company detail pages are expensive and change slowly,
+  // so fetch them only on daily/manual full refresh (SCRAPE_CSE_DETAILS=true).
+  const includeDetails = process.env.SCRAPE_CSE_DETAILS === 'true';
+  const concurrency = 5;
   let saved = 0;
   for (let i = 0; i < market.length; i += concurrency) {
     const chunk = market.slice(i, i + concurrency);
     const enriched = await Promise.all(chunk.map(async r => {
-      const d = await getCompanyDetails(r.code);
+      const d = includeDetails ? await getCompanyDetails(r.code) : {};
       const eps = numberFrom(d.eps);
       const pe = eps && eps !== 0 ? Number((r.ltp / eps).toFixed(2)) : null;
-      return {
+      const row = {
         code: r.code, date: r.date, ltp: r.ltp, high: r.high, low: r.low,
-        category: d.category ?? null,
-        eps: d.eps ?? null,
-        pe_ratio: pe,
-        dividend: d.dividend ?? null,
-        record_date: d.record_date ?? null,
         updated_at: r.updated_at
       };
+      // Do not null-out previously collected fundamentals during frequent price-only runs.
+      if (includeDetails) Object.assign(row, {
+        category: d.category ?? null, eps: d.eps ?? null, pe_ratio: pe,
+        dividend: d.dividend ?? null, record_date: d.record_date ?? null
+      });
+      return row;
     }));
     for (const row of enriched) {
       if (await upsert('cse_market_data', row, 'code,date')) saved++;
@@ -140,7 +143,7 @@ async function startScraper() {
     await new Promise(r => setTimeout(r, 300));
     console.log(`📦 CSE progress: ${Math.min(i + chunk.length, market.length)}/${market.length}`);
   }
-
+  console.log(`ℹ️ Company details: ${includeDetails ? 'enabled' : 'skipped (price-only schedule)'}`);
   console.log(`🎉 CSE scraper completed: ${saved}/${market.length}`);
 }
 

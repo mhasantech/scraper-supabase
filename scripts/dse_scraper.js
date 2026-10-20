@@ -42,7 +42,7 @@ function parseRenderedRows(html) {
       if (!cells.length) return;
       const code = cleanText(cells[codeIdx]);
       const ltp = numberFrom(cells[ltpIdx]);
-      if (!code || ltp === null || !/^[A-Z0-9&().\-]+$/i.test(code)) return;
+      if (!code || ltp === null || ltp <= 0 || !/^[A-Z0-9&().\-]+$/i.test(code)) return;
 
       const ycp = ycpIdx >= 0 ? numberFrom(cells[ycpIdx]) : null;
       const change = changeIdx >= 0 ? numberFrom(cells[changeIdx]) : (ycp !== null ? ltp - ycp : null);

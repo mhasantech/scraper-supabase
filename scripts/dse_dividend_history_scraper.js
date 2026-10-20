@@ -103,14 +103,20 @@ async function fetchCompanyPage(ticker) {
 }
 
 async function fetchTickers() {
-  const url = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/dse_live_data?select=ticker&order=ticker.asc&limit=1000`;
-  const { data } = await retry(async () => axios.get(url, {
-    headers: supabaseHeaders(),
-    httpsAgent,
-    timeout: 30000
-  }), 'Fetch DSE ticker list');
-  const tickers = [...new Set((data || []).map(x => cleanText(x.ticker).toUpperCase()).filter(Boolean))];
+  const base = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/dse_live_data`;
+  const all = [];
+  const pageSize = 1000;
+  for (let offset = 0; ; offset += pageSize) {
+    const url = `${base}?select=ticker&order=ticker.asc&limit=${pageSize}&offset=${offset}`;
+    const { data } = await retry(async () => axios.get(url, {
+      headers: supabaseHeaders(), httpsAgent, timeout: 30000
+    }), `Fetch DSE ticker list offset ${offset}`);
+    all.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  const tickers = [...new Set(all.map(x => cleanText(x.ticker).toUpperCase()).filter(Boolean))];
   if (!tickers.length) throw new Error('No tickers found in Supabase dse_live_data. Check table data and API permissions.');
+  console.log(`📚 Loaded ${tickers.length} unique tickers across paginated results.`);
   return tickers;
 }
 
