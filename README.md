@@ -133,3 +133,38 @@ so an unsuccessful scrape will not erase existing year values.
 - DSEX scraper now attempts a safe legacy-page fallback when a dated DSEX/DSES/DS30 history table is not present. It only writes a latest DSEX value when the explicitly labelled legacy DSEX row and a trustworthy recent update date can both be parsed; it does not invent missing historical dates or DSES/DS30 values.
 - Offline parser checks: `npm run test:dsex` and `npm run test:dse-legacy`.
 - Live DSE HTML and Supabase upsert could not be verified without running the scraper in its configured GitHub Actions environment.
+
+
+## Updated StockPulse schedule and manual full refresh
+
+- `scrape.yml` runs DSE/CSE current prices, indices and market summary every 30 minutes during the configured Bangladesh market window.
+- When the existing app/Pipedream button dispatches `scrape.yml` manually, the workflow runs CSE prices + company details, DSE prices, DSEX indices, market summary, historical DSE refresh, indicator precompute, daily closing/fundamentals, and DSE dividend history in sequence. `include_history` defaults to true.
+- CSE company detail pages are not fetched during frequent scheduled price-only runs. They are fetched during a manual full refresh.
+- Dividend-history scheduled refresh is now twice weekly; manual full refresh still covers all tickers.
+- `market-summary.yml` and `daily-closing.yml` are manual-only to avoid duplicate scheduled runs. `update-history.yml` is shifted to 16:45 Bangladesh time.
+- Shared GitHub Actions concurrency group serializes market pipeline jobs so manual and scheduled market runs do not run concurrently.
+
+### Duplicate prevention and Supabase constraints
+
+All market writers use PostgREST upsert with conflict keys. To prevent duplicate rows, ensure these UNIQUE constraints exist in Supabase (the upsert conflict target requires them):
+
+- `dse_live_data (ticker, date)`
+- `daily_closing_prices (ticker, date)`
+- `cse_market_data (code, date)`
+- `history_dse (ticker, date)`
+- `dsex_index (index_name, date)`
+- `dse_dividend_data (code)`
+
+A repeated run for the same key will merge into the existing row rather than create a second row. This does not mean every network upsert is skipped; it means duplicates are prevented by the database key. Back up the database and check existing duplicates before creating constraints.
+
+### Ticker coverage
+
+The dividend scraper now paginates through all `dse_live_data` ticker rows rather than reading only the first 1,000. The source universe for dividend history is therefore every distinct ticker present in `dse_live_data`; a ticker absent from that table cannot be scraped by this job. Confirm the live-price scraper populates the complete official ticker universe before relying on full coverage.
+
+### Before deploying
+
+1. Confirm GitHub repository secrets `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set.
+2. Confirm the existing Pipedream workflow dispatches `.github/workflows/scrape.yml` via `workflow_dispatch`.
+3. Confirm the Supabase unique constraints above exist and inspect any pre-existing duplicates first.
+4. Run `npm install`, `npm run test:dse-legacy`, and `npm run test:dsex` in GitHub Actions or a local environment with dependencies.
+5. Check the first manual run's Actions logs and Supabase row counts before treating it as production-ready.
