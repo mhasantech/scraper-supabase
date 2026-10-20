@@ -127,3 +127,9 @@ Dividend History** → Run workflow. For a single test, enter `AAMRANET` in the 
 input. The workflow also runs daily; check its logs because the legacy DSE site may block requests
 or change its HTML. The scraper skips pages where it cannot confidently parse dividend history,
 so an unsuccessful scrape will not erase existing year values.
+
+## Maintenance patch — 2026-10-20
+
+- DSEX scraper now attempts a safe legacy-page fallback when a dated DSEX/DSES/DS30 history table is not present. It only writes a latest DSEX value when the explicitly labelled legacy DSEX row and a trustworthy recent update date can both be parsed; it does not invent missing historical dates or DSES/DS30 values.
+- Offline parser checks: `npm run test:dsex` and `npm run test:dse-legacy`.
+- Live DSE HTML and Supabase upsert could not be verified without running the scraper in its configured GitHub Actions environment.
