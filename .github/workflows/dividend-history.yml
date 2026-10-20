@@ -8,11 +8,11 @@ on:
         required: false
         type: string
   schedule:
-    # Daily at 18:30 Bangladesh time, Sunday-Thursday (UTC 12:30)
-    - cron: '30 12 * * 0-4'
+    # Twice weekly at 18:30 Bangladesh time (UTC 12:30), Sunday and Tuesday.
+    - cron: '30 12 * * 0,2'
 
 concurrency:
-  group: stockpulse-dividend-history-${{ github.ref }}
+  group: stockpulse-market-pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

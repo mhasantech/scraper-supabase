@@ -1,78 +1,101 @@
-name: Market Scraper (CSE + DSE + DSEX)
+name: Market Scraper (CSE + DSE + DSEX + Full Manual Refresh)
 
 on:
   schedule:
-    # UTC ৩:০০ থেকে ১১:৫৯ পর্যন্ত প্রতি ১৫ মিনিটে (বাংলাদেশ সকাল ৯টা – বিকাল ৫:৫৯)
-    - cron: '*/15 3-11 * * 0-4'
-    # UTC ১২:০০ তে একবার (বাংলাদেশ বিকাল ৬টা) – শেষ দামটি ধরা
+    # Bangladesh time 09:00-17:30 every 30 minutes (UTC 03:00-11:30), Sunday-Thursday.
+    - cron: '0,30 3-11 * * 0-4'
+    # Final price refresh at Bangladesh 18:00.
     - cron: '0 12 * * 0-4'
-  workflow_dispatch: # ম্যানুয়াল রান (যেকোনো সময় করবেন)
+  workflow_dispatch:
+    inputs:
+      include_history:
+        description: 'Refresh historical prices and indicators too (full run can take longer)'
+        required: true
+        default: true
+        type: boolean
 
+# Shared group prevents the scheduled scrape and button-triggered full run from overlapping.
 concurrency:
-  group: stockpulse-market-scrape-${{ github.ref }}
+  group: stockpulse-market-pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 180
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Install Node dependencies
+        run: npm ci || npm install
 
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Run CSE Scraper
+      # Scheduled runs do only the frequently changing market data.
+      - name: CSE current prices (scheduled)
+        if: github.event_name == 'schedule'
         env:
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SCRAPE_CSE_DETAILS: 'false'
         run: node scripts/cse_scraper.js
-
-      - name: Run DSE Scraper (Current DSE Website)
-        env:
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      - name: DSE current prices (scheduled)
+        if: github.event_name == 'schedule'
         run: node scripts/dse_scraper.js
-
-      - name: Run DSEX Scraper
-        env:
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      - name: DSEX / indices (scheduled)
+        if: github.event_name == 'schedule'
         run: node scripts/dsex_scraper.js
+      - name: Market summary (scheduled)
+        if: github.event_name == 'schedule'
+        run: node scripts/market_summary_scraper.js
 
-      - name: Upload page copies if a scraper failed
+      # The app's existing Pipedream button dispatches this workflow manually.
+      # A manual run performs the full ordered pipeline so dependencies finish before consumers run.
+      - name: CSE prices + company details (manual)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SCRAPE_CSE_DETAILS: 'true'
+        run: node scripts/cse_scraper.js
+      - name: DSE current prices (manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/dse_scraper.js
+      - name: DSEX / indices (manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/dsex_scraper.js
+      - name: Market summary (manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/market_summary_scraper.js
+      - name: Setup Python for historical data
+        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install historical scraper dependencies
+        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Update DSE historical prices (manual)
+        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        run: node scripts/update_dse_history.js
+      - name: Precompute technical indicators (manual)
+        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        run: node scripts/precompute_indicators.js
+      - name: Update daily closing fundamentals (manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/update_daily_closing.js
+      - name: Scrape DSE dividend history (manual, all tickers)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DIVIDEND_SCRAPE_DELAY_MS: '350'
+        run: node scripts/dse_dividend_history_scraper.js
+      - name: Upload debug files on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: scrape-debug
+          name: scraper-debug
           path: debug/
           if-no-files-found: ignore
-          retention-days: 3
-
-  daily-closing:
-    runs-on: ubuntu-latest
-    if: always() && (github.event_name == 'workflow_dispatch')
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Update Daily Closing Prices (CSE)
-        env:
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node scripts/update_daily_closing.js
+          retention-days: 5

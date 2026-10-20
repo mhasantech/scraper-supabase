@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: stockpulse-full-refresh-${{ github.ref }}
+  group: stockpulse-market-pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

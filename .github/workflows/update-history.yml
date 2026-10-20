@@ -2,12 +2,12 @@ name: Update DSE History (Daily)
 
 on:
   schedule:
-    # UTC 10:30 = Bangladesh 4:30 PM (Sunday-Thursday)
-    - cron: '30 10 * * 0-4'
+    # UTC 10:45 = Bangladesh 4:45 PM, after the main market close scrape.
+    - cron: '45 10 * * 0-4'
   workflow_dispatch:
 
 concurrency:
-  group: stockpulse-history-${{ github.ref }}
+  group: stockpulse-market-pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
