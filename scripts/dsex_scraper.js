@@ -26,6 +26,7 @@ const DSE_RECENT_MARKET_URLS = [
 ];
 
 const INDEX_NAMES = ['DSEX', 'DSES', 'DS30'];
+const { parseLegacyDsex, parsePageDate, htmlToLegacyText } = require('./lib/dse_legacy');
 
 // ------------------------------------------------------------
 // Pure parsing helpers (no network, no Supabase) — unit-tested in test_dsex_recent.js
@@ -329,11 +330,26 @@ async function scrapeDSEIndices(common) {
       const html = await fetchRecentMarketPage(url, common);
       try {
         marketRows = parseRecentMarketRows(html);
+        break;
       } catch (parseError) {
-        saveDebug(`dsex-source-${n}.html`, html);
-        throw parseError;
+        // The old DSE page sometimes shows stock rows instead of a dated index table.
+        // In that case save today's DSEX only from its explicitly labelled index row;
+        // never fabricate historical values or DSES/DS30.
+        try {
+          const legacy = parseLegacyDsex(html);
+          const date = parsePageDate(htmlToLegacyText(html));
+          if (!date) throw new Error('Legacy page has no trustworthy recent update date');
+          marketRows = [{ date, DSEX: legacy.dsex, _legacyChange: legacy.change,
+            _legacyChangePercent: legacy.change_percent, _legacySignSource: legacy.signSource }];
+          console.warn(`⚠️ No dated index history table; using explicitly labelled latest DSEX row (${date}).`);
+          marketRows._legacyFallback = true;
+          marketRows._legacyDsex = legacy;
+          break;
+        } catch (legacyError) {
+          saveDebug(`dsex-source-${n}.html`, html);
+          throw new Error(`${parseError.message}; legacy fallback: ${legacyError.message}`);
+        }
       }
-      break;
     } catch (err) {
       errors.push(`${url}: ${err.message}`);
       console.warn(`⚠️ DSE index source failed (HTTP): ${url} — ${err.message}`);
@@ -344,11 +360,22 @@ async function scrapeDSEIndices(common) {
       const html = common.renderPage(url, 15000);
       try {
         marketRows = parseRecentMarketRows(html);
+        break;
       } catch (parseError) {
-        saveDebug(`dsex-source-${n}-rendered.html`, html);
-        throw parseError;
+        try {
+          const legacy = parseLegacyDsex(html);
+          const date = parsePageDate(htmlToLegacyText(html));
+          if (!date) throw new Error('Legacy page has no trustworthy recent update date');
+          marketRows = [{ date, DSEX: legacy.dsex }];
+          marketRows._legacyFallback = true;
+          marketRows._legacyDsex = legacy;
+          console.warn(`⚠️ Rendered page has no dated index history table; using latest DSEX row (${date}).`);
+          break;
+        } catch (legacyError) {
+          saveDebug(`dsex-source-${n}-rendered.html`, html);
+          throw new Error(`${parseError.message}; legacy fallback: ${legacyError.message}`);
+        }
       }
-      break;
     } catch (err) {
       errors.push(`${url} (browser): ${err.message}`);
       console.warn(`⚠️ DSE index source failed (browser): ${url} — ${err.message}`);
@@ -359,11 +386,18 @@ async function scrapeDSEIndices(common) {
     throw new Error(`No DSE index table found on any source. ${errors.join(' | ')}`);
   }
 
-  if (marketRows.length < 2) {
+  if (marketRows.length < 2 && !marketRows._legacyFallback) {
     throw new Error('Expected at least two market dates for index change calculation.');
   }
 
   const rows = makeIndexRows(marketRows);
+  if (marketRows._legacyFallback && marketRows._legacyDsex) {
+    const latestDsex = rows.find(row => row.index_name === 'DSEX');
+    if (latestDsex) {
+      latestDsex.change = marketRows._legacyDsex.change;
+      latestDsex.change_percent = marketRows._legacyDsex.change_percent;
+    }
+  }
   const dates = [...new Set(rows.map(row => row.date))];
   console.log(`📊 Recent market dates parsed: ${dates.length} (${dates[0]} → ${dates[dates.length - 1]})`);
   console.log(`📊 Index rows to save: ${rows.length}`);
