@@ -86,12 +86,6 @@ jobs:
       - name: Update daily closing fundamentals (manual)
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         run: node scripts/update_daily_closing.js
-      - name: Scrape DSE dividend history (manual, all tickers)
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-        env:
-          DIVIDEND_SCRAPE_DELAY_MS: '120'
-          DIVIDEND_CONCURRENCY: '6'
-        run: node scripts/dse_dividend_history_scraper.js
       - name: Upload debug files on failure
         if: failure()
         uses: actions/upload-artifact@v4
