@@ -10,8 +10,13 @@ if (!SUPABASE_SERVICE_KEY) {
   throw new Error('SUPABASE_SERVICE_KEY environment variable is missing');
 }
 
-// Keep TLS certificate verification enabled in production.
-const httpsAgent = new https.Agent({ rejectUnauthorized: true });
+// Supabase: keep TLS certificate verification ENABLED.
+const httpsAgent = new https.Agent({ rejectUnauthorized: true, keepAlive: true, maxSockets: 32 });
+
+// Public market-data pages (cse.com.bd, dsebd.org) send an incomplete certificate chain, which
+// Node rejects with "unable to verify the first certificate" although browsers accept it.
+// Use this agent ONLY for those read-only public pages, never for Supabase or anything with secrets.
+const externalHttpsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true, maxSockets: 32 });
 
 const browserCandidates = [
   process.env.CHROME_BIN,
@@ -130,20 +135,24 @@ function renderPage(url, virtualTimeBudget = 15000) {
     '--headless=new', '--no-sandbox', '--disable-gpu',
     '--disable-dev-shm-usage', '--disable-software-rasterizer',
     '--no-first-run', '--no-default-browser-check',
+    '--disable-extensions', '--disable-sync', '--disable-component-update',
+    '--mute-audio', '--log-level=3',
     '--window-size=1440,2400',
     `--virtual-time-budget=${virtualTimeBudget}`,
     '--run-all-compositor-stages-before-draw',
     '--dump-dom', url
   ];
+  // stderr is ignored: headless Chrome on GitHub runners prints harmless dbus / GCM "ERROR" lines.
   const html = execFileSync(browser, args, {
-    encoding: 'utf8', timeout: 120000, maxBuffer: 50 * 1024 * 1024
+    encoding: 'utf8', timeout: 120000, maxBuffer: 50 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore']
   });
   if (!html || html.length < 1000) throw new Error('Rendered page is empty/too small.');
   return html;
 }
 
 module.exports = {
-  axios, httpsAgent, SUPABASE_URL, SUPABASE_SERVICE_KEY,
+  axios, httpsAgent, externalHttpsAgent, SUPABASE_URL, SUPABASE_SERVICE_KEY,
   getDhakaDate, cleanText, numberFrom, normalizeHeader, condition,
   supabaseHeaders, upsert, retry, updateOrInsertByDate, findBrowser, renderPage
 };
