@@ -2,9 +2,11 @@
 
 const { createClient } = require('@supabase/supabase-js');
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+// An unset GitHub secret arrives as an empty string, so use || (not ??) and the same project URL
+// default as the other scripts. Without this the step failed immediately when SUPABASE_URL was not set.
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY are required');
+if (!SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_SERVICE_KEY secret is missing (GitHub repo Settings > Secrets and variables > Actions)');
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
 
 const PAGE = 1000;

@@ -4,14 +4,21 @@
 // and parse its table instead of the old company-list assumptions.
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { externalHttpsAgent, getDhakaDate, cleanText, numberFrom, normalizeHeader, upsert, retry } = require('./lib/common');
+const https = require('https');
+// Public market pages (cse.com.bd, dsebd.org) send an incomplete certificate chain, which Node rejects
+// with "unable to verify the first certificate" although browsers accept it. This agent is defined
+// here (not only in lib/common.js) so the script works even if an older common.js is deployed.
+// Use it ONLY for read-only public pages, never for Supabase or any request that carries secrets.
+const publicPagesAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true, maxSockets: 32 });
+const TLS_BANNER = '🔐 TLS: public market pages use the tolerant agent (Supabase stays strict)';
+const { getDhakaDate, cleanText, numberFrom, normalizeHeader, upsert, retry, renderPage } = require('./lib/common');
 
 const CSE_LIST_URL = 'https://www.cse.com.bd/market/current_price';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36';
 
 async function fetchHtml(url) {
   const response = await axios.get(url, {
-    httpsAgent: externalHttpsAgent,
+    httpsAgent: publicPagesAgent,
     headers: {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -23,6 +30,17 @@ async function fetchHtml(url) {
     validateStatus: s => s >= 200 && s < 400
   });
   return response.data;
+}
+
+// The price list is server-rendered. Plain HTTP is used first; if the request itself fails
+// (network / TLS), a headless Chromium render of the same page is the backup.
+async function fetchListHtml() {
+  try {
+    return await fetchHtml(CSE_LIST_URL);
+  } catch (err) {
+    console.warn(`⚠️ Direct CSE request failed (${err.code || err.message}); trying Chromium for the price list`);
+    return renderPage(CSE_LIST_URL, 20000);
+  }
 }
 
 function parseCurrentPrice(html) {
@@ -142,7 +160,8 @@ async function startScraper() {
   console.log(`🌐 Source: ${CSE_LIST_URL}`);
   console.log(`📅 Market date: ${getDhakaDate()}`);
 
-  const html = await fetchHtml(CSE_LIST_URL);
+  console.log(TLS_BANNER);
+  const html = await fetchListHtml();
   const market = parseCurrentPrice(html);
   console.log(`📊 CSE market rows: ${market.length}`);
 

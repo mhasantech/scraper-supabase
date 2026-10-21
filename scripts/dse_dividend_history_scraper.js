@@ -10,10 +10,21 @@
 //   * Chromium is only a capped last resort (DIVIDEND_MAX_BROWSER_FALLBACKS, default 15 per run);
 //   * each page is parsed once.
 const cheerio = require('cheerio');
+const https = require('https');
+// Public market pages (cse.com.bd, dsebd.org) send an incomplete certificate chain, which Node rejects
+// with "unable to verify the first certificate" although browsers accept it. This agent is defined
+// here (not only in lib/common.js) so the script works even if an older common.js is deployed.
+// Use it ONLY for read-only public pages, never for Supabase or any request that carries secrets.
+const publicPagesAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true, maxSockets: 32 });
+const TLS_BANNER = '🔐 TLS: public market pages use the tolerant agent (Supabase stays strict)';
 const {
-  axios, httpsAgent, externalHttpsAgent, SUPABASE_URL,
+  axios, httpsAgent, SUPABASE_URL,
   cleanText, supabaseHeaders, retry, renderPage
 } = require('./lib/common');
+
+// A certificate failure will not fix itself on a second try, so it is not retried (retry() only
+// repeats transient network/5xx errors; marking it with a 4xx-style status makes it fail fast).
+const isTlsError = e => /CERT|VERIFY|SIGNATURE|SELF.SIGNED/i.test(String(e && (e.code || e.message)));
 
 const DSE_COMPANY_URL = 'https://old.dsebd.org/displayCompany.php?name=';
 const YEARS = Array.from({ length: 2035 - 1990 + 1 }, (_, i) => 1990 + i);
@@ -103,13 +114,19 @@ async function fetchCompanyPage(ticker) {
   const url = DSE_COMPANY_URL + encodeURIComponent(ticker);
   try {
     return await retry(async () => {
-      const response = await axios.get(url, {
-        httpsAgent: externalHttpsAgent,
-        timeout: 20000,
-        headers: PAGE_HEADERS,
-        responseType: 'text',
-        validateStatus: status => status === 200
-      });
+      let response;
+      try {
+        response = await axios.get(url, {
+          httpsAgent: publicPagesAgent,
+          timeout: 20000,
+          headers: PAGE_HEADERS,
+          responseType: 'text',
+          validateStatus: status => status === 200
+        });
+      } catch (err) {
+        if (isTlsError(err)) err.response = { status: 495 };   // do not retry certificate errors
+        throw err;
+      }
       const html = String(response.data);
       if (html.length < 1000) throw new Error('DSE returned a too-small page');
       return html;
@@ -223,6 +240,7 @@ async function run() {
   const started = Date.now();
   console.log('📚 StockPulse DSE dividend-history scraper');
   console.log(`🌐 Source: ${DSE_COMPANY_URL}<TICKER>`);
+  console.log(TLS_BANNER);
   const tickers = process.env.DIVIDEND_TICKERS
     ? process.env.DIVIDEND_TICKERS.split(',').map(x => x.trim().toUpperCase()).filter(Boolean)
     : await fetchTickers();
