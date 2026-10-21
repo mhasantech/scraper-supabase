@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install
+      - run: npm install --no-audit --no-fund
       - run: node scripts/update_daily_closing.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

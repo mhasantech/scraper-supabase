@@ -18,17 +18,18 @@ concurrency:
 jobs:
   scrape-dividends:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install
+      - run: npm install --no-audit --no-fund
       - name: Scrape dividend history from DSE legacy company pages
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           DIVIDEND_TICKERS: ${{ github.event.inputs.tickers }}
-          DIVIDEND_SCRAPE_DELAY_MS: '350'
+          DIVIDEND_SCRAPE_DELAY_MS: '120'
+          DIVIDEND_CONCURRENCY: '6'
         run: node scripts/dse_dividend_history_scraper.js

@@ -35,61 +35,62 @@ jobs:
         with:
           node-version: '20'
       - name: Install Node dependencies
-        run: npm ci || npm install
+        run: npm install --no-audit --no-fund
 
       # Scheduled runs do only the frequently changing market data.
       - name: CSE current prices (scheduled)
-        if: github.event_name == 'schedule'
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
         env:
           SCRAPE_CSE_DETAILS: 'false'
         run: node scripts/cse_scraper.js
       - name: DSE current prices (scheduled)
-        if: github.event_name == 'schedule'
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
         run: node scripts/dse_scraper.js
       - name: DSEX / indices (scheduled)
-        if: github.event_name == 'schedule'
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
         run: node scripts/dsex_scraper.js
       - name: Market summary (scheduled)
-        if: github.event_name == 'schedule'
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
         run: node scripts/market_summary_scraper.js
 
       # The app's existing Pipedream button dispatches this workflow manually.
       # A manual run performs the full ordered pipeline so dependencies finish before consumers run.
       - name: CSE prices + company details (manual)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         env:
           SCRAPE_CSE_DETAILS: 'true'
         run: node scripts/cse_scraper.js
       - name: DSE current prices (manual)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         run: node scripts/dse_scraper.js
       - name: DSEX / indices (manual)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         run: node scripts/dsex_scraper.js
       - name: Market summary (manual)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         run: node scripts/market_summary_scraper.js
       - name: Setup Python for historical data
-        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.include_history }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install historical scraper dependencies
-        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.include_history }}
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
       - name: Update DSE historical prices (manual)
-        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.include_history }}
         run: node scripts/update_dse_history.js
       - name: Precompute technical indicators (manual)
-        if: github.event_name == 'workflow_dispatch' && inputs.include_history
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.include_history }}
         run: node scripts/precompute_indicators.js
       - name: Update daily closing fundamentals (manual)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         run: node scripts/update_daily_closing.js
       - name: Scrape DSE dividend history (manual, all tickers)
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
         env:
-          DIVIDEND_SCRAPE_DELAY_MS: '350'
+          DIVIDEND_SCRAPE_DELAY_MS: '120'
+          DIVIDEND_CONCURRENCY: '6'
         run: node scripts/dse_dividend_history_scraper.js
       - name: Upload debug files on failure
         if: failure()
