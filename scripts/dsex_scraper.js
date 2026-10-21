@@ -296,9 +296,9 @@ function saveDebug(name, html) {
 }
 
 async function fetchRecentMarketPage(url, common) {
-  const { axios, httpsAgent } = common;
+  const { axios, externalHttpsAgent } = common;
   const response = await axios.get(url, {
-    httpsAgent,
+    httpsAgent: externalHttpsAgent,
     headers: {
       'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
