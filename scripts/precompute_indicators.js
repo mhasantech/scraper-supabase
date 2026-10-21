@@ -7,7 +7,18 @@ const { createClient } = require('@supabase/supabase-js');
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://dpdicusxlrdydajkcgev.supabase.co';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 if (!SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_SERVICE_KEY secret is missing (GitHub repo Settings > Secrets and variables > Actions)');
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+// @supabase/supabase-js creates a Realtime (WebSocket) client when it is constructed. Node 20 has no
+// native WebSocket, so the library throws "Node.js 20 detected without native WebSocket support"
+// before any query runs. This script only reads and writes tables and never uses Realtime, so give
+// the client a transport: the real `ws` package when it is installed, otherwise an inert placeholder.
+let realtimeTransport;
+try { realtimeTransport = require('ws'); } catch (_) {
+  realtimeTransport = class UnusedWebSocket { constructor() { throw new Error('Realtime is not used by this script'); } };
+}
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  auth: { persistSession: false },
+  realtime: { transport: realtimeTransport }
+});
 
 const PAGE = 1000;
 const META = 'stock_metadata';
