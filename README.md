@@ -168,3 +168,29 @@ The dividend scraper now paginates through all `dse_live_data` ticker rows rathe
 3. Confirm the Supabase unique constraints above exist and inspect any pre-existing duplicates first.
 4. Run `npm install`, `npm run test:dse-legacy`, and `npm run test:dsex` in GitHub Actions or a local environment with dependencies.
 5. Check the first manual run's Actions logs and Supabase row counts before treating it as production-ready.
+
+## Certificate errors ("unable to verify the first certificate")
+
+`cse.com.bd` and `dsebd.org` send an incomplete certificate chain. Browsers repair this automatically, Node does not. Public market pages are therefore fetched with `externalHttpsAgent` (`scripts/lib/common.js`). Supabase keeps strict certificate verification (`httpsAgent`). Never use the tolerant agent for requests that carry secrets.
+
+## Workflow behaviour
+
+- Every step in `scrape.yml` uses `!cancelled()`, so one failing source (for example CSE) no longer skips the DSE, market-summary, history, daily-closing and dividend steps. The run still ends red if any step failed, so errors stay visible.
+- Dependencies are installed with `npm install --no-audit --no-fund` (there is no `package-lock.json`, so `npm ci` only printed an error before falling back).
+
+## Dividend history scraper speed
+
+`scripts/dse_dividend_history_scraper.js` processes tickers in parallel and only uses Chromium as a capped last resort.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DIVIDEND_CONCURRENCY` | 6 | parallel tickers |
+| `DIVIDEND_SCRAPE_DELAY_MS` | 120 | pause per worker after each ticker |
+| `DIVIDEND_MAX_BROWSER_FALLBACKS` | 15 | Chromium launches allowed per run |
+| `DIVIDEND_TICKERS` | all | comma-separated ticker list |
+
+If DSE starts answering with HTTP 429/503, lower `DIVIDEND_CONCURRENCY` (for example 3).
+
+## CSE scraper
+
+Rows are saved in batches of 100 instead of one request per ticker. When a company-details page cannot be read, the stored `eps`, `pe_ratio`, `dividend`, `record_date` and `category` are left untouched instead of being overwritten with empty values.
