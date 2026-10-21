@@ -171,10 +171,11 @@ The dividend scraper now paginates through all `dse_live_data` ticker rows rathe
 
 ## Certificate errors ("unable to verify the first certificate")
 
-`cse.com.bd` and `dsebd.org` send an incomplete certificate chain. Browsers repair this automatically, Node does not. Public market pages are therefore fetched with `externalHttpsAgent` (`scripts/lib/common.js`). Supabase keeps strict certificate verification (`httpsAgent`). Never use the tolerant agent for requests that carry secrets.
+`cse.com.bd` and `dsebd.org` send an incomplete certificate chain. Browsers repair this automatically, Node does not. Public market pages are therefore fetched with a tolerant agent that is defined inside each scraper (`cse_scraper.js`, `dse_dividend_history_scraper.js`, `dsex_scraper.js`), so they work even if an older `scripts/lib/common.js` is deployed. Supabase keeps strict certificate verification (`httpsAgent`). Never use the tolerant agent for requests that carry secrets.
 
 ## Workflow behaviour
 
+- The dividend-history scraper is NOT part of the manual `scrape.yml` pipeline any more. Run it from its own workflow ("StockPulse DSE Dividend History", manual or Sunday/Tuesday schedule).
 - Every step in `scrape.yml` uses `!cancelled()`, so one failing source (for example CSE) no longer skips the DSE, market-summary, history, daily-closing and dividend steps. The run still ends red if any step failed, so errors stay visible.
 - Dependencies are installed with `npm install --no-audit --no-fund` (there is no `package-lock.json`, so `npm ci` only printed an error before falling back).
 
