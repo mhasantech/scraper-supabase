@@ -142,21 +142,48 @@ async function fetchCompanyPage(ticker) {
   }
 }
 
-async function fetchTickers() {
-  const base = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/dse_live_data`;
+async function fetchTableTickers(table, column) {
+  const base = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${table}`;
   const all = [];
   const pageSize = 1000;
   for (let offset = 0; ; offset += pageSize) {
-    const url = `${base}?select=ticker&order=ticker.asc&limit=${pageSize}&offset=${offset}`;
+    const url = `${base}?select=${encodeURIComponent(column)}&order=${encodeURIComponent(column)}.asc&limit=${pageSize}&offset=${offset}`;
     const { data } = await retry(async () => axios.get(url, {
       headers: supabaseHeaders(), httpsAgent, timeout: 30000
-    }), `Fetch DSE ticker list offset ${offset}`);
+    }), `Fetch ${table} ticker list offset ${offset}`);
     all.push(...(data || []));
     if (!data || data.length < pageSize) break;
   }
-  const tickers = [...new Set(all.map(x => cleanText(x.ticker).toUpperCase()).filter(Boolean))];
-  if (!tickers.length) throw new Error('No tickers found in Supabase dse_live_data. Check table data and API permissions.');
-  console.log(`📚 Loaded ${tickers.length} unique tickers across paginated results.`);
+  return all.map(row => cleanText(row[column]).toUpperCase()).filter(Boolean);
+}
+
+// Dividend coverage must not depend only on today's live-price scrape. Union live,
+// historical, and metadata tickers so temporarily missing or delisted symbols can
+// still be considered. A failed source is reported and does not silently cancel the
+// other sources; fail only if no source yields any tickers.
+async function fetchTickers() {
+  const sources = [
+    ['dse_live_data', 'ticker'],
+    ['history_dse', 'ticker'],
+    ['stock_metadata', 'ticker']
+  ];
+  const all = new Set();
+  const sourceCounts = {};
+  const failures = [];
+  for (const [table, column] of sources) {
+    try {
+      const tickers = await fetchTableTickers(table, column);
+      sourceCounts[table] = tickers.length;
+      tickers.forEach(ticker => all.add(ticker));
+    } catch (error) {
+      failures.push(`${table}: ${error.response?.data?.message || error.message}`);
+      console.warn(`⚠️ Could not read tickers from ${table}: ${error.response?.data?.message || error.message}`);
+    }
+  }
+  const tickers = [...all].sort();
+  console.log('📊 Ticker sources:', JSON.stringify(sourceCounts));
+  if (!tickers.length) throw new Error(`No tickers found in any Supabase ticker source. ${failures.join(' | ')}`);
+  console.log(`📚 Loaded ${tickers.length} unique tickers from live + history + metadata.`);
   return tickers;
 }
 
