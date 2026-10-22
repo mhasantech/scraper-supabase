@@ -195,3 +195,7 @@ If DSE starts answering with HTTP 429/503, lower `DIVIDEND_CONCURRENCY` (for exa
 ## CSE scraper
 
 Rows are saved in batches of 100 instead of one request per ticker. When a company-details page cannot be read, the stored `eps`, `pe_ratio`, `dividend`, `record_date` and `category` are left untouched instead of being overwritten with empty values.
+
+## Automatic ticker discovery
+
+The DSE/CSE current-price scrapers parse the symbols returned by the exchange market tables and upsert rows into `dse_live_data` and `cse_market_data`. The StockPulse app merges symbols from those tables into its in-memory ticker universe at startup and refreshes every six hours while open. No hard-coded `core.js` edit is required for symbols that are successfully published into those tables. This relies on the app's Supabase RLS allowing read access to market data. Discovery does not by itself guarantee history, indicators, dividend data, or that non-equity instruments are excluded; verify exchange category fields and the ticker coverage audit.
