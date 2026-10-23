@@ -20,8 +20,29 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   realtime: { transport: realtimeTransport }
 });
 
-const PAGE = 1000;
+const PAGE = 500;
 const META = 'stock_metadata';
+const MAX_RETRIES = 5;
+const RETRY_BASE_MS = 1500;
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function isRetryable(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  const status = Number(error?.status || error?.statusCode || error?.code);
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504 ||
+    /bad gateway|gateway timeout|timeout|timed out|fetch failed|network|temporar|econnreset|socket hang up|connection reset/.test(msg);
+}
+async function withRetry(label, operation) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      if (attempt >= MAX_RETRIES || !isRetryable(error)) throw error;
+      const delay = RETRY_BASE_MS * (2 ** attempt) + Math.floor(Math.random() * 500);
+      console.warn(`⚠️ ${label} failed (${error?.message || error}); retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+}
 
 function nums(a) { return a.map(Number).filter(Number.isFinite); }
 function sma(a,p){ if(a.length<p)return null; return a.slice(-p).reduce((x,y)=>x+y,0)/p; }
@@ -39,7 +60,20 @@ function ichimoku(rows){if(rows.length<52)return null;const x=rows.slice(-52), m
 function linearRegression(a,p=20){if(a.length<p)return null;const y=a.slice(-p),n=p,sx=n*(n-1)/2,sxx=(n-1)*n*(2*n-1)/6,sy=y.reduce((s,v)=>s+v,0),sxy=y.reduce((s,v,i)=>s+i*v,0),den=n*sxx-sx*sx;if(!den)return null;const slope=(n*sxy-sx*sy)/den,inter=(sy-slope*sx)/n;return {slope,intercept:inter,value:slope*(n-1)+inter};}
 function vwap(rows){let pv=0,v=0;for(const r of rows){const vol=r.volume||0;pv+=((r.high+r.low+r.ltp)/3)*vol;v+=vol;}return v?pv/v:null;}
 
-async function fetchHistory(){const all=[];for(let from=0;;from+=PAGE){const {data,error}=await supabase.from('history_dse').select('ticker,date,ltp,high,low,volume').order('ticker',{ascending:true}).order('date',{ascending:true}).range(from,from+PAGE-1);if(error)throw error;if(!data?.length)break;all.push(...data);console.log(`📥 history rows: ${all.length}`);if(data.length<PAGE)break;}return all;}
+async function fetchHistory(){
+ const all=[];
+ for(let from=0;;from+=PAGE){
+   const {data,error}=await withRetry(`history_dse page ${from}-${from+PAGE-1}`,()=>
+     supabase.from('history_dse').select('ticker,date,ltp,high,low,volume')
+       .order('ticker',{ascending:true}).order('date',{ascending:true}).range(from,from+PAGE-1));
+   if(error)throw error;
+   if(!data?.length)break;
+   all.push(...data);
+   console.log(`📥 history rows: ${all.length}`);
+   if(data.length<PAGE)break;
+ }
+ return all;
+}
 
 async function main(){
  console.log('======================================'); console.log('📊 STOCKPULSE INDICATOR PRECOMPUTE'); console.log('======================================');
@@ -65,8 +99,12 @@ async function main(){
    // stock_metadata.rsi is a NUMERIC column; keep the rich RSI metadata inside indicators JSONB.
    const payload={indicators,last_updated:calculatedAt,rsi:indicators.rsi14,psar:indicators.psar};
    try{
-     const {data:existing,error:e1}=await supabase.from(META).select('ticker').eq('ticker',ticker).maybeSingle(); if(e1)throw e1;
-     if(existing){const {error}=await supabase.from(META).update(payload).eq('ticker',ticker);if(error)throw error;} else {const {error}=await supabase.from(META).insert({ticker,...payload});if(error)throw error;}
+     await withRetry(`stock_metadata write ${ticker}`, async () => {
+       const {data:existing,error:e1}=await supabase.from(META).select('ticker').eq('ticker',ticker).maybeSingle();
+       if(e1)throw e1;
+       if(existing){const {error}=await supabase.from(META).update(payload).eq('ticker',ticker);if(error)throw error;}
+       else {const {error}=await supabase.from(META).insert({ticker,...payload});if(error)throw error;}
+     });
      ok++;
    }catch(e){fail++;console.error(`❌ ${ticker}:`,e.message||e);}
  }
