@@ -1,2 +1,5 @@
 debug/
 node_modules/
+__pycache__/
+*.pyc
+ticker-audit-output/

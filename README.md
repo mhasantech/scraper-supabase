@@ -199,3 +199,12 @@ Rows are saved in batches of 100 instead of one request per ticker. When a compa
 ## Automatic ticker discovery
 
 The DSE/CSE current-price scrapers parse the symbols returned by the exchange market tables and upsert rows into `dse_live_data` and `cse_market_data`. The StockPulse app merges symbols from those tables into its in-memory ticker universe at startup and refreshes every six hours while open. No hard-coded `core.js` edit is required for symbols that are successfully published into those tables. This relies on the app's Supabase RLS allowing read access to market data. Discovery does not by itself guarantee history, indicators, dividend data, or that non-equity instruments are excluded; verify exchange category fields and the ticker coverage audit.
+
+## Ticker-list performance and filtering (2026-10-23)
+
+- New shared helper `scripts/lib/tickers.js`. Date-keyed tables (`dse_live_data`, `history_dse`, `daily_closing_prices`, `cse_market_data`) are read for their **latest date only**, which is about one row per instrument, instead of paginating years of history. This keeps the ticker list fast even as history grows.
+- The dividend-history job builds its universe from the latest `dse_live_data` day, the latest `history_dse` day and `stock_metadata`. Set `DIVIDEND_ALL_HISTORY_TICKERS=1` to scan every `history_dse` row (slow) if delisted symbols must be included.
+- Government securities (codes like `TB5Y1130`, `T10Y0128`, `BGTB...`) are skipped by the dividend job because they have no company page or dividends. Mutual funds and debentures are kept. The pattern lives in `lib/tickers.js` (`isLikelyNonEquityCode`); extend it if more instrument types should be excluded.
+- `npm run audit:tickers` now finds the app's `core.js` automatically in common sibling folders (`../My-Stock-main/core.js`, `../My-Stock/core.js`) or via `APP_CORE_JS`. It uses latest-day mode by default; `AUDIT_ALL_ROWS=1` scans all rows. Filtered government securities are labelled `DATABASE_ONLY_GOVT_SECURITY_FILTERED`.
+- The ignore file is now `.gitignore` (it was committed as `gitignore`, so it had no effect) and also covers `__pycache__/` and `ticker-audit-output/`. The stray `scripts/__pycache__` folder was removed.
+
