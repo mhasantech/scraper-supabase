@@ -21,6 +21,7 @@ const {
   axios, httpsAgent, SUPABASE_URL,
   cleanText, supabaseHeaders, retry, renderPage
 } = require('./lib/common');
+const { fetchDistinctColumn, isLikelyNonEquityCode } = require('./lib/tickers');
 
 // A certificate failure will not fix itself on a second try, so it is not retried (retry() only
 // repeats transient network/5xx errors; marking it with a 4xx-style status makes it fail fast).
@@ -142,46 +143,35 @@ async function fetchCompanyPage(ticker) {
   }
 }
 
-async function fetchTableTickers(table, column) {
-  const base = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/${table}`;
-  const all = [];
-  const pageSize = 1000;
-  for (let offset = 0; ; offset += pageSize) {
-    const url = `${base}?select=${encodeURIComponent(column)}&order=${encodeURIComponent(column)}.asc&limit=${pageSize}&offset=${offset}`;
-    const { data } = await retry(async () => axios.get(url, {
-      headers: supabaseHeaders(), httpsAgent, timeout: 30000
-    }), `Fetch ${table} ticker list offset ${offset}`);
-    all.push(...(data || []));
-    if (!data || data.length < pageSize) break;
-  }
-  return all.map(row => cleanText(row[column]).toUpperCase()).filter(Boolean);
-}
-
-// Dividend coverage must not depend only on today's live-price scrape. Union live,
-// historical, and metadata tickers so temporarily missing or delisted symbols can
-// still be considered. A failed source is reported and does not silently cancel the
-// other sources; fail only if no source yields any tickers.
+// Ticker universe for dividend history. Reads only the latest day of the big date-keyed tables
+// (dse_live_data, history_dse) plus stock_metadata, instead of paginating years of history rows.
+// A failed source is reported and does not cancel the others; fail only if no source yields tickers.
+// Government securities (no company page / dividends) are skipped.
+// Set DIVIDEND_ALL_HISTORY_TICKERS=1 to scan every history_dse row (slow) and include delisted symbols.
 async function fetchTickers() {
+  const allRows = process.env.DIVIDEND_ALL_HISTORY_TICKERS === '1';
   const sources = [
-    ['dse_live_data', 'ticker'],
-    ['history_dse', 'ticker'],
-    ['stock_metadata', 'ticker']
+    ['dse_live_data', 'ticker', { dated: true }],
+    ['history_dse', 'ticker', { dated: true, allRows }],
+    ['stock_metadata', 'ticker', { dated: false }]
   ];
   const all = new Set();
   const sourceCounts = {};
   const failures = [];
-  for (const [table, column] of sources) {
+  for (const [table, column, opts] of sources) {
     try {
-      const tickers = await fetchTableTickers(table, column);
-      sourceCounts[table] = tickers.length;
+      const tickers = await fetchDistinctColumn(table, column, opts);
+      sourceCounts[table] = tickers.size;
       tickers.forEach(ticker => all.add(ticker));
     } catch (error) {
       failures.push(`${table}: ${error.response?.data?.message || error.message}`);
       console.warn(`⚠️ Could not read tickers from ${table}: ${error.response?.data?.message || error.message}`);
     }
   }
-  const tickers = [...all].sort();
+  const skipped = [...all].filter(isLikelyNonEquityCode);
+  const tickers = [...all].filter(t => !isLikelyNonEquityCode(t)).sort();
   console.log('📊 Ticker sources:', JSON.stringify(sourceCounts));
+  if (skipped.length) console.log(`⏭️ Skipped ${skipped.length} government-security code(s): ${skipped.slice(0, 20).join(', ')}${skipped.length > 20 ? ', ...' : ''}`);
   if (!tickers.length) throw new Error(`No tickers found in any Supabase ticker source. ${failures.join(' | ')}`);
   console.log(`📚 Loaded ${tickers.length} unique tickers from live + history + metadata.`);
   return tickers;
